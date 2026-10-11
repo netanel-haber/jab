@@ -6,7 +6,7 @@ Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> and jab jumps to the link, button or box you 
 
 > We have `tab` at home.
 
-<img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q jumps to the top story, again to the next one, and holding Ctrl+Q while pressing 4 goes to the fourth. On a sign-in form it goes to the email box, then the password, then Sign in.">
+<img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q jumps to the top story, again to the next one, and holding Ctrl+Q while pressing 4 goes to the fourth.">
 
 Press again for its next guess, or hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press the number you see. It all happens in your browser; nothing is sent anywhere ([privacy](PRIVACY.md)).
 
