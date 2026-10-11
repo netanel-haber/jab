@@ -38,7 +38,10 @@
     a { color: var(--green); text-underline-offset: 3px; }
     h1 { font-size: 2rem; line-height: 1.25; }
     h2 { margin-top: 2rem; font-size: 1.25rem; }
-    p:has(> img) + p { font-size: 1.5rem; line-height: 1.45; }
+    main > p:first-child + p { font-size: 1.5rem; line-height: 1.45; }
+    img { max-width: 100%; }
+    /* the demo is wider than the text, up to its own width */
+    p:has(> img[width]) { margin-inline: calc((100% - min(840px, 100vw - 2.5rem)) / 2); }
     /* keys, and the tab in the joke, as keycaps */
     kbd, blockquote code { padding: 0 0.4em; border: 1px solid #55555a; border-bottom-width: 3px; border-radius: 6px; background: #38383c; color: #fff; font: 600 0.8em/1.6 system-ui, sans-serif; }
     /* the joke as a text exchange: the kid on the right, mom on the left */
