@@ -26,4 +26,4 @@ jab runs on every page (`<all_urls>`) so that Ctrl+Q works wherever you are. It 
 
 ## Contact
 
-Questions: open an issue at https://github.com/netanel-haber/jab/issues.
+Questions: open an issue at <https://github.com/netanel-haber/jab/issues>.

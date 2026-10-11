@@ -1,20 +1,12 @@
 <img src="icon.png" alt="jab" height="64">
 
-Ctrl+Q tabs to what you want next, using 2MB of gradient-boosted trees from 2016.
+Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> and jab jumps to the link, button or box you most likely want next.
 
 > **Mom can we have `tab`?**
 
 > We have `tab` at home.
 
-| Keys | |
-|---|---|
-| Ctrl+Q | Go to the best guess, badge the top 4 |
-| Tap again | Next of the 4 |
-| Hold Ctrl+Q + 1-4 | That one |
-
-Anything else you do ends it. Runs locally in ~20 ms; nothing leaves the browser ([privacy policy](PRIVACY.md)).
-
-Built on [LightGBM](https://github.com/microsoft/LightGBM) (Microsoft, 2016; Ke et al., NeurIPS 2017), [NumPy](https://numpy.org) and [scikit-learn](https://scikit-learn.org). Trained on 1,244 real sites labelled by Claude and 5,000 generated pages labelled by rule.
+Press again for its next guess, or hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press the number you see. It all happens in your browser; nothing is sent anywhere ([privacy](PRIVACY.md)).
 
 <details><summary>MIT License</summary>
 

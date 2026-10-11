@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#1c1c1e" />
+  {%- assign title = page.title | default: "jab: Ctrl+Q jumps to what you want next" %}
+  {%- assign description = "A Chrome extension: press Ctrl+Q and jab jumps to the link, button or box you most likely want next. Nothing leaves your browser." %}
+  {%- assign url = page.url | replace: "index.html", "" | prepend: "https://jab.run" %}
+  <title>{{ title }}</title>
+  <meta name="description" content="{{ description }}" />
+  <link rel="canonical" href="{{ url }}" />
+  <link rel="icon" type="image/png" href="/icon.png" />
+  <meta property="og:title" content="{{ title }}" />
+  <meta property="og:description" content="{{ description }}" />
+  <meta property="og:url" content="{{ url }}" />
+  <meta property="og:site_name" content="jab" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://jab.run/icon.png" />
+  <meta name="twitter:card" content="summary" />
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "jab",
+      "description": "{{ description }}",
+      "applicationCategory": "BrowserApplication",
+      "operatingSystem": "Chrome",
+      "codeRepository": "https://github.com/netanel-haber/jab",
+      "license": "https://opensource.org/licenses/MIT",
+      "url": "https://jab.run/"
+    }
+  </script>
+  <style>
+    :root { color-scheme: dark; --bg: #1c1c1e; --raised: #2c2c2f; --text: #ebe9e6; --soft: #a3a09b; --line: #3a3a3d; --green: #00b85a; }
+    body { max-width: 36rem; margin: 0 auto; padding: 3rem 1.25rem 2rem; background: var(--bg); color: var(--text); font: 1.125rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    a { color: var(--green); text-underline-offset: 3px; }
+    h1 { font-size: 2rem; line-height: 1.25; }
+    h2 { margin-top: 2rem; font-size: 1.25rem; }
+    p:has(> img) + p { font-size: 1.5rem; line-height: 1.45; }
+    /* keys, and the tab in the joke, as keycaps */
+    kbd, blockquote code { padding: 0 0.4em; border: 1px solid #55555a; border-bottom-width: 3px; border-radius: 6px; background: #38383c; color: #fff; font: 600 0.8em/1.6 system-ui, sans-serif; }
+    /* the joke as a text exchange: the kid on the right, mom on the left */
+    blockquote { width: fit-content; margin: 0.5rem 0; padding: 0.5rem 1rem; border-radius: 1.2rem 1.2rem 1.2rem 0.3rem; background: var(--raised); }
+    blockquote:first-of-type { margin-left: auto; border-radius: 1.2rem 1.2rem 0.3rem 1.2rem; background: #14532d; }
+    blockquote p { margin: 0; }
+    blockquote strong { font-weight: inherit; }
+    details, footer { color: var(--soft); font-size: 0.875rem; }
+    summary { cursor: pointer; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+  </style>
+</head>
+
+<body>
+  <main>
+{{ content }}
+  </main>
+  <footer>
+    <a href="/">jab</a> · <a href="/PRIVACY.html">Privacy</a> · <a href="https://github.com/netanel-haber/jab">GitHub</a> · by <a href="https://www.netanel.dev/">Netanel Haber</a>
+  </footer>
+</body>
+
+</html>

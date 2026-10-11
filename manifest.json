@@ -12,7 +12,7 @@
       "all_frames": true
     }
   ],
-  "description": "Ctrl+Q tabs to what you want next, using 2MB of gradient-boosted trees from 2016",
+  "description": "Press Ctrl+Q to jump to the link, button or box you most likely want next.",
   "icons": {
     "16": "icon.png",
     "48": "icon.png",
