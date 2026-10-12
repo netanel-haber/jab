@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "jab",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "background": {
     "service_worker": "jab.js"
   },
@@ -12,6 +12,7 @@
       "all_frames": true
     }
   ],
+  "homepage_url": "https://jab.run",
   "description": "Press Ctrl+Q to jump to the link, button or box you most likely want next.",
   "icons": {
     "16": "icon.png",

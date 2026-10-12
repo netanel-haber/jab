@@ -2,6 +2,8 @@
 
 Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> and jab jumps to the link, button or box you most likely want next.
 
+**[Add to Chrome](https://chromewebstore.google.com/detail/jab/dfnikmnfgjnbmhfnpeigignlgpkggbji)**
+
 > **Mom can we have `tab`?**
 
 > We have `tab` at home.
