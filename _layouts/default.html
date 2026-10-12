@@ -5,8 +5,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#1c1c1e" />
-  {%- assign title = page.title | default: "jab: Ctrl+Q jumps to what you want next" %}
-  {%- assign description = "A Chrome extension: press Ctrl+Q and jab jumps to the link, button or box you most likely want next. Nothing leaves your browser." %}
+  {%- assign title = page.title | default: "jab" %}
+  {%- assign description = "Pressing Ctrl+Q will focus the control/field that the ranker assumes you want, based on the current page, focused elements, etc." %}
   {%- assign url = page.url | replace: "index.html", "" | prepend: "https://jab.run" %}
   <title>{{ title }}</title>
   <meta name="description" content="{{ description }}" />

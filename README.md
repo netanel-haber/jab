@@ -1,6 +1,6 @@
 <img src="icon.png" alt="jab" height="64">
 
-Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> and jab jumps to the link, button or box you most likely want next.
+Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control/field that the ranker assumes you want, based on the current page, focused elements, etc.
 
 **[Add to Chrome](https://chromewebstore.google.com/detail/jab/dfnikmnfgjnbmhfnpeigignlgpkggbji)**
 
@@ -10,7 +10,15 @@ Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> and jab jumps to the link, button or box you 
 
 <img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q jumps to the top story, again to the next one, and holding Ctrl+Q while pressing 4 goes to the fourth.">
 
-Press again for its next guess, or hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press the number you see. It all happens in your browser; nothing is sent anywhere ([privacy](PRIVACY.md)).
+The ranker is lean: Just 2MB, LightGBM (2016) trees running in-browser CPU-only in about 20ms. No network requests, nothing leaves the browser ([privacy](PRIVACY.md)).
+
+- The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control, as well as highlight 3 other picks with small numbered badges.
+- Tap <kbd>Ctrl</kbd>+<kbd>Q</kbd> again: the next of the four.
+- Hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press <kbd>1</kbd> to <kbd>4</kbd>: Straight to that one.
+
+Anything else you do (typing, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>Q</kbd> will be a new session.
+
+Open source (MIT): [github.com/netanel-haber/jab](https://github.com/netanel-haber/jab)
 
 <details><summary>MIT License</summary>
 

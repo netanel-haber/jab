@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "jab",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "background": {
     "service_worker": "jab.js"
   },
@@ -13,7 +13,7 @@
     }
   ],
   "homepage_url": "https://jab.run",
-  "description": "Press Ctrl+Q to jump to the link, button or box you most likely want next.",
+  "description": "Pressing Ctrl+Q will focus the control/field that the ranker assumes you want, based on the current page, focused elements, etc.",
   "icons": {
     "16": "icon.png",
     "48": "icon.png",
