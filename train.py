@@ -2,10 +2,10 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "scipy", "lightgbm", "scikit-learn", "regex"]
 # ///
-"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz ranker.json [--all]
+"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz ranker.json.gz [--all]
 
 Trains two LightGBM models over every control of a page, a LambdaRank ranker and a "how much is it wanted" model, and writes their
-trees as ranker.json for jab.js, which adds their scores (each standardised within the page). The shipped file: --all.
+trees, gzipped, as ranker.json.gz for jab.js, which adds their scores (each standardised within the page). The shipped file: --all.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, labelled by Claude from screenshots, and 8,674 steps on 5,000
 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
 pop-ups; six languages), labelled by rule, collected by jab.js's own collector. One labelled step per line:
@@ -378,5 +378,5 @@ ranker = {
     "words": [WORDS[f - len(FEATURES)] for f in used],
     "models": trees,
 }
-pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":")))
+pathlib.Path(args.out).write_bytes(gzip.compress(json.dumps(ranker, separators=(",", ":")).encode(), mtime=0))
 print(f"2 models of {len(trees[0])} trees and {len(used)} words written to {args.out}")

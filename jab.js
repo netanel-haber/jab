@@ -1,5 +1,5 @@
 // jab: one file, two roles. In a page (content script) it finds the focusable controls, handles Ctrl+Q and draws the badges;
-// in the extension's service worker it ranks the controls with the LightGBM models in ranker.json.
+// in the extension's service worker it ranks the controls with the LightGBM models in ranker.json.gz.
 // Nothing is cached per page: every press scores the page as it is right now.
 if (self.document) {
   const SEL =
@@ -408,7 +408,7 @@ if (self.document) {
     true,
   );
 } else {
-  // The ranker: two LightGBM models in ranker.json (made by train.py: a ranker and a "how much is it wanted" model) score every control
+  // The ranker: two LightGBM models in ranker.json.gz (made by train.py: a ranker and a "how much is it wanted" model) score every control
   // of the page from cheap features (where it is, what it is, how it looks, what is on top, what reads as content, its words), no neural
   // network. rank(model, controls, focus, page): controls as collect() returns them, focus the index of the focused control or -1.
   // Returns one score per control (each model's scores standardised within the page, then added); null for the focused one.
@@ -616,7 +616,10 @@ if (self.document) {
     let k = 0;
     return all.map((c) => (c.i == focus ? null : total[k++]));
   };
-  const model = fetch(chrome.runtime.getURL("ranker.json")).then((r) => r.json()); // loaded once per worker start, in milliseconds
+  // loaded once per worker start, in milliseconds
+  const model = fetch(chrome.runtime.getURL("ranker.json.gz")).then((r) =>
+    new Response(r.body.pipeThrough(new DecompressionStream("gzip"))).json(),
+  );
   chrome.runtime.onMessage.addListener(({ controls, focus, page }, _, send) => {
     model.then((m) => send(rank(m, controls, focus, page)));
     return true;
