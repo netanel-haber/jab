@@ -321,9 +321,8 @@ if held:
     report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 
-# The numbers in ranker.json as short as they can be: a threshold is the shortest decimal that still splits the training values the
-# same way and stays near the middle of the gap between them, where LightGBM put it (22.5, not 22.500000000000004); a leaf keeps 4
-# significant digits.
+# The thresholds in ranker.json as short as they can be: the shortest decimal that still splits the training values the same way and
+# stays near the middle of the gap between them, where LightGBM put it (22.5, not 22.500000000000004).
 by_column = X.tocsc()
 seen = {}
 
@@ -344,33 +343,30 @@ def threshold(j, t):
     return t
 
 
-def flat(root):
-    """ranker.json: a tree as flat arrays [feature, threshold, left, right, leaf values]; a negative child ~n is leaf n"""
-    f, thr, left, right, leaf = [], [], [], [], []
-
-    def visit(node):
-        if "leaf_index" in node:
-            leaf.append(float(f"{node['leaf_value']:.4g}"))
-            return ~(len(leaf) - 1)
-        i = len(f)
-        f.append(node["split_feature"])
-        thr.append(threshold(node["split_feature"], node["threshold"]))
-        left.append(0)
-        right.append(0)
-        left[i] = visit(node["left_child"])
-        right[i] = visit(node["right_child"])
-        return i
-
-    visit(root)
-    return [f, thr, left, right, leaf]
+def splits(node):
+    """the features a tree splits on"""
+    if "leaf_index" not in node:
+        yield node["split_feature"]
+        yield from splits(node["left_child"])
+        yield from splits(node["right_child"])
 
 
-trees = [[flat(info["tree_structure"]) for info in m.dump_model()["tree_info"]] for m in models]
+roots = [[info["tree_structure"] for info in m.dump_model()["tree_info"]] for m in models]
 # only the words some tree asks about go in ranker.json, numbered after the features
-used = sorted({f for model in trees for t in model for f in t[0] if f >= len(FEATURES)})
+used = sorted({f for model in roots for root in model for f in splits(root) if f >= len(FEATURES)})
 column = {f: len(FEATURES) + j for j, f in enumerate(used)}
-for t in (t for model in trees for t in model):
-    t[0] = [column.get(f, f) for f in t[0]]
+
+
+def tree(node):
+    """ranker.json: a tree as nested [feature, threshold, left, right]; a leaf as a whole number, its value times 10^4 (jab.js
+    standardises each model's scores within the page, so only their ratios matter)"""
+    if "leaf_index" in node:
+        return round(node["leaf_value"] * 1e4)
+    f = node["split_feature"]
+    return [column.get(f, f), threshold(f, node["threshold"]), tree(node["left_child"]), tree(node["right_child"])]
+
+
+trees = [[tree(root) for root in model] for model in roots]
 ranker = {
     "features": FEATURES,
     "kinds": KINDS,

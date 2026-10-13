@@ -430,12 +430,10 @@ if (self.document) {
     /^(textarea|input (text|search|email|password|tel|url|number)|textbox|searchbox|combobox)$/.test(c.kind); // controls you type into
   const count = (items) => items.reduce((m, k) => m.set(k, (m.get(k) ?? 0) + 1), new Map());
   const rankOf = (ordered) => new Map(ordered.map((c, r) => [c.i, r]));
-  // a tree: go left when the feature is <= the threshold; a negative child ~n is leaf n
-  const walk = ([feature, threshold, left, right, leaf], x) => {
-    if (!feature.length) return leaf[0];
-    let node = 0;
-    while (node >= 0) node = x[feature[node]] <= threshold[node] ? left[node] : right[node];
-    return leaf[~node];
+  // a tree: a node [feature, threshold, left, right] goes left when the feature is <= the threshold; a leaf is a number
+  const walk = (node, x) => {
+    while (Array.isArray(node)) node = x[node[0]] <= node[1] ? node[2] : node[3];
+    return node;
   };
   const standardise = (r) => {
     const mean = r.reduce((a, b) => a + b, 0) / r.length;
