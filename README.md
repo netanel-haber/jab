@@ -10,7 +10,7 @@ Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control/field that the rank
 
 <img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q jumps to the top story, again to the next one, and holding Ctrl+Q while pressing 4 goes to the fourth.">
 
-The ranker is lean: Just 0.7MB, LightGBM (2016) trees running in-browser CPU-only in about 20ms. No network requests, nothing leaves the browser ([privacy](PRIVACY.md)).
+The ranker is lean: Just 90KB, LightGBM (2016) trees running in-browser CPU-only in about 20ms. No network requests, nothing leaves the browser ([privacy](PRIVACY.md)).
 
 - The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control, as well as highlight 3 other picks with small numbered badges.
 - Tap <kbd>Ctrl</kbd>+<kbd>Q</kbd> again: the next of the four.

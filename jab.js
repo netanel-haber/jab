@@ -1,5 +1,5 @@
 // jab: one file, two roles. In a page (content script) it finds the focusable controls, handles Ctrl+Q and draws the badges;
-// in the extension's service worker it ranks the controls with the LightGBM models in ranker.json.
+// in the extension's service worker it ranks the controls with the LightGBM trees in ranker.json.
 // Nothing is cached per page: every press scores the page as it is right now.
 if (self.document) {
   const SEL =
@@ -408,10 +408,10 @@ if (self.document) {
     true,
   );
 } else {
-  // The ranker: two LightGBM models in ranker.json (made by train.py: a ranker and a "how much is it wanted" model) score every control
-  // of the page from cheap features (where it is, what it is, how it looks, what is on top, what reads as content, its words), no neural
-  // network. rank(model, controls, focus, page): controls as collect() returns them, focus the index of the focused control or -1.
-  // Returns one score per control (each model's scores standardised within the page, then added); null for the focused one.
+  // The ranker: the LightGBM trees in ranker.json (made by train.py) score every control of the page from cheap features (where it is,
+  // what it is, how it looks, what is on top, what reads as content, its words), no neural network.
+  // rank(model, controls, focus, page): controls as collect() returns them, focus the index of the focused control or -1.
+  // Returns one score per control (the higher, the sooner); null for the focused one.
   // Every count is computed once per page, so thousands of controls stay cheap. The features are train.py's, by name.
   const STOP = new Set(
     `the and for with from that this your you our are was were has have had not but all any can will into about its his her
@@ -434,11 +434,6 @@ if (self.document) {
   const walk = (node, x) => {
     while (Array.isArray(node)) node = x[node[0]] <= node[1] ? node[2] : node[3];
     return node;
-  };
-  const standardise = (r) => {
-    const mean = r.reduce((a, b) => a + b, 0) / r.length;
-    const sd = Math.sqrt(r.reduce((a, b) => a + (b - mean) ** 2, 0) / r.length) + 1e-9;
-    return r.map((v) => (v - mean) / sd);
   };
 
   const rank = (model, all, focus, page) => {
@@ -494,7 +489,7 @@ if (self.document) {
     const columns = (prefix, text) =>
       [...new Set(words(text))].map((w) => column.get(prefix + w)).filter((j) => j !== undefined);
     for (const j of columns("p:", `${page.path} ${page.title} ${page.desc} ${page.h1} ${page.query}`)) x[j] = 1;
-    const raw = model.models.map(() => []);
+    const scores = [];
     for (const c of controls) {
       const label = new Set(words(c.label)),
         segments = hrefPath(c).split("/").filter(Boolean),
@@ -607,12 +602,11 @@ if (self.document) {
         ...columns("c:", `${c.before} ${c.parent} ${c.around}`),
       ];
       for (const j of set) x[j] = 1;
-      model.models.forEach((trees, m) => raw[m].push(trees.reduce((sum, tree) => sum + walk(tree, x), 0)));
+      scores.push(model.trees.reduce((sum, tree) => sum + walk(tree, x), 0));
       for (const j of set) x[j] = 0;
     }
-    const total = raw.map(standardise).reduce((a, b) => a.map((v, k) => v + b[k]));
     let k = 0;
-    return all.map((c) => (c.i == focus ? null : total[k++]));
+    return all.map((c) => (c.i == focus ? null : scores[k++]));
   };
   const model = fetch(chrome.runtime.getURL("ranker.json")).then((r) => r.json()); // loaded once per worker start, in milliseconds
   chrome.runtime.onMessage.addListener(({ controls, focus, page }, _, send) => {

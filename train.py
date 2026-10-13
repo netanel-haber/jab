@@ -4,8 +4,8 @@
 # ///
 """jab: which controls does a person want next?   uv run train.py steps.jsonl.gz ranker.json [--all]
 
-Trains two LightGBM models over every control of a page, a LambdaRank ranker and a "how much is it wanted" model, and writes their
-trees as ranker.json for jab.js, which adds their scores (each standardised within the page). The shipped file: --all.
+Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees as ranker.json for jab.js, which puts the
+controls in the order of their scores. The shipped file: --all.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
 allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
@@ -241,7 +241,7 @@ FEATURES = list(
 
 
 def rows(steps_):
-    """The rows the models see, every step's controls one after another: the features, then a 0/1 per word of the control, of the
+    """The rows the model sees, every step's controls one after another: the features, then a 0/1 per word of the control, of the
     text around it and of the page, as one sparse matrix; and each step's control ids."""
     dense, cols, ids = [], [], []
     for s in steps_:
@@ -273,9 +273,9 @@ def relevance(s, ids):
 X, ids = rows(train)
 y = np.concatenate([relevance(s, i) for s, i in zip(train, ids)])
 params = {
-    "n_estimators": 400,
-    "learning_rate": 0.05,
-    "num_leaves": 63,
+    "n_estimators": 200,
+    "learning_rate": 0.1,
+    "num_leaves": 31,
     "min_child_samples": 10,
     "subsample": 0.8,
     "subsample_freq": 1,
@@ -285,26 +285,19 @@ params = {
     "force_row_wise": True,
     "verbose": -1,
 }
-# The ranker learns the order; the other model how much each control is wanted (the next one 1, the picks after it 2/3, the also-fine
-# 1/3), so that the two agree on the order too.
-models = [
-    lgb.LGBMRanker(**params).fit(X, y, group=[len(i) for i in ids]).booster_,
-    lgb.LGBMRegressor(objective="cross_entropy", **params).fit(X, y / 3).booster_,
-]
-
-z = lambda v: (v - v.mean()) / (v.std() + 1e-9)
+model = lgb.LGBMRanker(**params).fit(X, y, group=[len(i) for i in ids]).booster_
 
 
 def report(name, steps_):
     """On landing (nothing focused): is the first stop wanted, and how many of the 4 stops are. Over all steps: the target first,
-    the target within the 4. For all steps and per kind of page, each model's scores standardised within the page and added."""
+    the target within the 4. For all steps and per kind of page."""
     X, ids = rows(steps_)
-    scores = [m.predict(X, raw_score=True) for m in models]
+    scores = model.predict(X, raw_score=True)
     tally = collections.defaultdict(lambda: np.zeros(6))
     start = 0
     for s, i in zip(steps_, ids):
         end = start + len(i)
-        order = [i[j] for j in np.argsort(-(z(scores[0][start:end]) + z(scores[1][start:end])), kind="stable")]
+        order = [i[j] for j in np.argsort(-scores[start:end], kind="stable")]
         start = end
         if not order:
             continue
@@ -356,28 +349,28 @@ def splits(node):
         yield from splits(node["right_child"])
 
 
-roots = [[info["tree_structure"] for info in m.dump_model()["tree_info"]] for m in models]
+roots = [info["tree_structure"] for info in model.dump_model()["tree_info"]]
 # only the words some tree asks about go in ranker.json, numbered after the features
-used = sorted({f for model in roots for root in model for f in splits(root) if f >= len(FEATURES)})
+used = sorted({f for root in roots for f in splits(root) if f >= len(FEATURES)})
 column = {f: len(FEATURES) + j for j, f in enumerate(used)}
 
 
 def tree(node):
     """ranker.json: a tree as nested [feature, threshold, left, right]; a leaf as a whole number, its value times 10^4 (jab.js
-    standardises each model's scores within the page, so only their ratios matter)"""
+    only orders the controls by their scores, so the scale does not matter)"""
     if "leaf_index" in node:
         return round(node["leaf_value"] * 1e4)
     f = node["split_feature"]
     return [column.get(f, f), threshold(f, node["threshold"]), tree(node["left_child"]), tree(node["right_child"])]
 
 
-trees = [[tree(root) for root in model] for model in roots]
+trees = [tree(root) for root in roots]
 ranker = {
     "features": FEATURES,
     "kinds": KINDS,
     "boxes": BOXES,
     "words": [WORDS[f - len(FEATURES)] for f in used],
-    "models": trees,
+    "trees": trees,
 }
 pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":")))
-print(f"2 models of {len(trees[0])} trees and {len(used)} words written to {args.out}")
+print(f"{len(trees)} trees and {len(used)} words written to {args.out}")
