@@ -321,17 +321,40 @@ if held:
     report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 
+# The numbers in ranker.json as short as they can be: a threshold is the shortest decimal that still splits the training values the
+# same way and stays near the middle of the gap between them, where LightGBM put it (22.5, not 22.500000000000004); a leaf keeps 4
+# significant digits.
+by_column = X.tocsc()
+seen = {}
+
+
+def threshold(j, t):
+    if j not in seen:
+        v = by_column.data[by_column.indptr[j] : by_column.indptr[j + 1]]
+        seen[j] = np.unique(np.append(v, 0.0) if len(v) < X.shape[0] else v)
+    v = seen[j]
+    k = np.searchsorted(v, t, side="right")  # v[k - 1] <= t < v[k]
+    low, high = v[k - 1] if k else -math.inf, v[k] if k < len(v) else math.inf
+    for digits in range(18):
+        scale = 10**digits
+        near = sorted({math.floor(t * scale) / scale, math.ceil(t * scale) / scale}, key=lambda q: abs(q - t))
+        for q in near:
+            if low <= q < high and abs(q - t) <= (high - low) / 4:
+                return int(q) if q.is_integer() else q
+    return t
+
+
 def flat(root):
     """ranker.json: a tree as flat arrays [feature, threshold, left, right, leaf values]; a negative child ~n is leaf n"""
     f, thr, left, right, leaf = [], [], [], [], []
 
     def visit(node):
         if "leaf_index" in node:
-            leaf.append(round(node["leaf_value"], 5))
+            leaf.append(float(f"{node['leaf_value']:.4g}"))
             return ~(len(leaf) - 1)
         i = len(f)
         f.append(node["split_feature"])
-        thr.append(node["threshold"])
+        thr.append(threshold(node["split_feature"], node["threshold"]))
         left.append(0)
         right.append(0)
         left[i] = visit(node["left_child"])
