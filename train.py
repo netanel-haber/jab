@@ -6,12 +6,14 @@
 
 Trains two LightGBM models over every control of a page, a LambdaRank ranker and a "how much is it wanted" model, and writes their
 trees as ranker.json for jab.js, which adds their scores (each standardised within the page). The shipped file: --all.
-steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, labelled by Claude from screenshots, and 8,674 steps on 5,000
-generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
-pop-ups; six languages), labelled by rule, collected by jab.js's own collector. One labelled step per line:
-{"split": "train"|"eval", "type": the kind of page ("real" for a real site), "page": {"path", "title", "desc", "scroll", "h1",
-"query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted next,
-"picks": the ordered 4 a person would want, "ok": others that are also fine}.
+steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
+allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
+5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
+pop-ups; six languages), labelled by rule; all collected by jab.js's own collector. One labelled step per line:
+{"split": "train"|"eval", "type": the kind of page ("real" or "live" for a real site), "page": {"path", "title", "desc", "scroll",
+"h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
+next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
+about, left out (optional)}.
 Prints, for the "eval" steps, overall and per kind of page: on landing, whether the first stop is wanted and how many of the 4 stops
 are; over all steps, top-1 and top-4. --all also trains on them, for the file you ship."""
 
@@ -245,7 +247,10 @@ def rows(steps_):
     for s in steps_:
         page = [f"p:{w}" for w in page_words(s["page"])]
         ids.append([])
+        unjudged = set(s.get("unjudged", ()))
         for c, f in describe(s):
+            if c["i"] in unjudged:
+                continue
             ids[-1].append(c["i"])
             dense.append(list(f.values()))
             mine = page + [f"w:{w}" for w in control_words(c)] + [f"c:{w}" for w in context_words(c)]
