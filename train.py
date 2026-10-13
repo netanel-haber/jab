@@ -273,9 +273,9 @@ def relevance(s, ids):
 X, ids = rows(train)
 y = np.concatenate([relevance(s, i) for s, i in zip(train, ids)])
 params = {
-    "n_estimators": 200,
-    "learning_rate": 0.1,
-    "num_leaves": 31,
+    "n_estimators": 100,
+    "learning_rate": 0.15,
+    "num_leaves": 21,
     "min_child_samples": 10,
     "subsample": 0.8,
     "subsample_freq": 1,
@@ -356,10 +356,10 @@ column = {f: len(FEATURES) + j for j, f in enumerate(used)}
 
 
 def tree(node):
-    """ranker.json: a tree as nested [feature, threshold, left, right]; a leaf as a whole number, its value times 10^4 (jab.js
-    only orders the controls by their scores, so the scale does not matter)"""
+    """ranker.json: a tree as nested [feature, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js
+    only orders the controls by the sum, and two decimals leave that order as it was)"""
     if "leaf_index" in node:
-        return round(node["leaf_value"] * 1e4)
+        return round(node["leaf_value"] * 100)
     f = node["split_feature"]
     return [column.get(f, f), threshold(f, node["threshold"]), tree(node["left_child"]), tree(node["right_child"])]
 
