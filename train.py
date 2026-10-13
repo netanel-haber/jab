@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["numpy", "scipy", "lightgbm", "scikit-learn", "regex"]
+# dependencies = ["numpy", "scipy", "lightgbm", "regex"]
 # ///
 """jab: which controls does a person want next?   uv run train.py steps.jsonl.gz ranker.json [--all]
 
@@ -14,8 +14,8 @@ pop-ups; six languages), labelled by rule; all collected by jab.js's own collect
 "h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
 next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
 about, left out (optional)}.
-Prints, for the "eval" steps, overall and per kind of page: on landing, whether the first stop is wanted and how many of the 4 stops
-are; over all steps, top-1 and top-4. --all also trains on them, for the file you ship."""
+Prints, for the "eval" steps, overall and per kind of page: whether the first stop is wanted, how many of the 4 stops are, whether the
+target is first and whether it is within the 4. --all also trains on them, for the file you ship."""
 
 import argparse
 import bisect
@@ -24,7 +24,6 @@ import gzip
 import json
 import math
 import pathlib
-import re
 
 import lightgbm as lgb
 import numpy as np
@@ -57,7 +56,7 @@ context_words = lambda c: set(words(f"{c['before']} {c['parent']} {c['around']}"
 page_words = lambda p: set(words(f"{p['path']} {p['title']} {p['desc']} {p['h1']} {p['query']}"))
 href_path = lambda c: c["href"].split("#")[0].split("?")[0]  # where a link leads, without its query and fragment
 
-matches = lambda pattern, text: re.search(pattern, text) is not None
+matches = lambda pattern, text: regex.search(pattern, text) is not None
 on_screen = lambda c: c["w"] >= 4 and c["h"] >= 4 and c["y"] + c["h"] >= 0 and c["y"] <= 900 and c["x"] <= 1280
 # controls you type into
 is_field = lambda c: matches(
@@ -224,7 +223,7 @@ def describe(step):
                 "external": c["ext"],
                 "fragment": c["href"].startswith("#"),
                 "href_depth": len(segments),
-                "slug_words": len([w for w in re.split(r"[-_]+", segments[-1]) if w]) if segments else 0,
+                "slug_words": len([w for w in regex.split(r"[-_]+", segments[-1]) if w]) if segments else 0,
                 "href_number": matches(r"[0-9]{3,}", href_path(c)),
                 # what it says next to what the page is about
                 "title_overlap": len(label & title_words) / len(label) if label else 0,
@@ -273,46 +272,40 @@ def relevance(s, ids):
 X, ids = rows(train)
 y = np.concatenate([relevance(s, i) for s, i in zip(train, ids)])
 params = {
-    "n_estimators": 100,
+    "objective": "lambdarank",
     "learning_rate": 0.15,
     "num_leaves": 21,
-    "min_child_samples": 10,
-    "subsample": 0.8,
-    "subsample_freq": 1,
-    "colsample_bytree": 0.8,
-    "random_state": 0,
+    "min_data_in_leaf": 10,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "feature_fraction": 0.8,
+    "seed": 0,
     "deterministic": True,  # with row-wise histograms, the same data gives the same trees on every run
     "force_row_wise": True,
     "verbose": -1,
 }
-model = lgb.LGBMRanker(**params).fit(X, y, group=[len(i) for i in ids]).booster_
+model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids]), num_boost_round=100)
 
 
 def report(name, steps_):
-    """On landing (nothing focused): is the first stop wanted, and how many of the 4 stops are. Over all steps: the target first,
-    the target within the 4. For all steps and per kind of page."""
+    """Over all steps and per kind of page: is the first stop wanted (the target, a pick or an also-fine one), how many of the 4 stops
+    are, is the target first, is it within the 4."""
     X, ids = rows(steps_)
     scores = model.predict(X, raw_score=True)
-    tally = collections.defaultdict(lambda: np.zeros(6))
+    tally = collections.defaultdict(lambda: np.zeros(5))
     start = 0
     for s, i in zip(steps_, ids):
-        end = start + len(i)
-        order = [i[j] for j in np.argsort(-scores[start:end], kind="stable")]
-        start = end
-        if not order:
-            continue
-        row = [0, 0, 0, order[0] == s["target"], s["target"] in order[:4], 1]
-        if s["focus"] < 0:
-            wanted = {*s["picks"], *s["ok"]}
-            row[:3] = [order[0] in wanted, len(wanted & set(order[:4])) / 4, 1]
-        for kind in {"all", s["type"]}:
-            tally[kind] += row
+        stops = [i[j] for j in np.argsort(-scores[start : start + len(i)], kind="stable")[:4]]
+        start += len(i)
+        if stops:
+            wanted = {s["target"], *s["picks"], *s["ok"]}
+            row = [stops[0] in wanted, len(wanted & set(stops)) / 4, stops[0] == s["target"], s["target"] in stops, 1]
+            for kind in {"all", s["type"]}:
+                tally[kind] += row
     print(f"{name}:")
-    for kind, t in sorted(tally.items(), key=lambda kv: (kv[0] != "all", kv[0])):
-        print(
-            f"  {kind:>9}: first stop wanted {t[0] / max(t[2], 1):.3f}  stops wanted {t[1] / max(t[2], 1):.3f}",
-            f" top-1 {t[3] / t[5]:.3f}  top-4 {t[4] / t[5]:.3f}  ({t[5]:.0f} steps)",
-        )
+    for kind, (first, wanted, top1, top4, n) in sorted(tally.items(), key=lambda kv: (kv[0] != "all", kv[0])):
+        print(f"  {kind:>9}: first stop wanted {first / n:.3f}  stops wanted {wanted / n:.3f}", end="")
+        print(f"  top-1 {top1 / n:.3f}  top-4 {top4 / n:.3f}  ({n:.0f} steps)")
 
 
 if held:
