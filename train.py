@@ -348,22 +348,36 @@ used = sorted({f for root in roots for f in splits(root) if f >= len(FEATURES)})
 column = {f: len(FEATURES) + j for j, f in enumerate(used)}
 
 
-def tree(node):
-    """ranker.json: a tree as nested [feature, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js
-    only orders the controls by the sum, and two decimals leave that order as it was)"""
+# ranker.json packs the trees one after another, each node before its left and then its right subtree: "shape" says which nodes split
+# (a 1 bit, four to a hex digit) and which are leaves; "splits" and "thresholds" are the splits' features and thresholds, "leaves"
+# the leaves' values as whole numbers, times 100 (jab.js only orders the controls by the sum, and two decimals leave that order as it
+# was). A node goes left when its feature is <= its threshold.
+shape, packed = [], {"splits": [], "thresholds": [], "leaves": []}
+
+
+def pack(node):
     if "leaf_index" in node:
-        return round(node["leaf_value"] * 100)
+        shape.append("0")
+        packed["leaves"].append(round(node["leaf_value"] * 100))
+        return
     f = node["split_feature"]
-    return [column.get(f, f), threshold(f, node["threshold"]), tree(node["left_child"]), tree(node["right_child"])]
+    shape.append("1")
+    packed["splits"].append(column.get(f, f))
+    packed["thresholds"].append(threshold(f, node["threshold"]))
+    pack(node["left_child"])
+    pack(node["right_child"])
 
 
-trees = [tree(root) for root in roots]
+for root in roots:
+    pack(root)
+bits = "".join(shape) + "000"
 ranker = {
     "features": FEATURES,
     "kinds": KINDS,
     "boxes": BOXES,
     "words": [WORDS[f - len(FEATURES)] for f in used],
-    "trees": trees,
+    "shape": "".join(f"{int(bits[k : k + 4], 2):x}" for k in range(0, len(shape), 4)),
+    **packed,
 }
 pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":")))
-print(f"{len(trees)} trees and {len(used)} words written to {args.out}")
+print(f"{len(roots)} trees and {len(used)} words written to {args.out}")

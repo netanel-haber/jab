@@ -608,7 +608,20 @@ if (self.document) {
     let k = 0;
     return all.map((c) => (c.i == focus ? null : scores[k++]));
   };
-  const model = fetch(chrome.runtime.getURL("ranker.json")).then((r) => r.json()); // loaded once per worker start, in milliseconds
+  // ranker.json's trees come packed (see train.py): unpacked here into nested [feature, threshold, left, right] nodes, once
+  const unpack = (m) => {
+    const bits = [...m.shape].flatMap((h) => [...parseInt(h, 16).toString(2).padStart(4, "0")]);
+    let b = 0,
+      s = 0,
+      l = 0;
+    const node = () => (bits[b++] == "1" ? [m.splits[s], m.thresholds[s++], node(), node()] : m.leaves[l++]);
+    m.trees = [];
+    while (l < m.leaves.length) m.trees.push(node());
+    return m;
+  };
+  const model = fetch(chrome.runtime.getURL("ranker.json"))
+    .then((r) => r.json())
+    .then(unpack); // loaded once per worker start, in milliseconds
   chrome.runtime.onMessage.addListener(({ controls, focus, page }, _, send) => {
     model.then((m) => send(rank(m, controls, focus, page)));
     return true;
