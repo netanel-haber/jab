@@ -1,6 +1,6 @@
 # jab privacy policy
 
-Last updated: October 10, 2026
+Last updated: October 14, 2026
 
 jab is a browser extension that moves the keyboard focus to the control you most likely want next when you press Ctrl+Q.
 
@@ -16,7 +16,7 @@ When you press Ctrl+Q, jab reads the page you are on, in your browser:
 
 It ranks the controls on your own device, with a model that ships inside the extension, and moves the focus. That is all.
 
-- Nothing is sent anywhere. jab makes no network requests; the only file it loads is its own model, from inside the extension.
+- Nothing is sent anywhere. jab makes no network requests and loads no files: its model is part of its own script.
 - Nothing is stored. What jab reads is discarded as soon as the ranking is done; it keeps no history, no logs and no settings.
 - Nothing is shared or sold, and there are no analytics, ads or third-party code.
 

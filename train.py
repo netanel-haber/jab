@@ -2,10 +2,10 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "scipy", "lightgbm", "regex"]
 # ///
-"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz ranker.json [--all]
+"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]
 
-Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees as ranker.json for jab.js, which puts the
-controls in the order of their scores. The shipped file: --all.
+Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
+which puts the controls in the order of their scores. The shipped trees: --all.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
 allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
@@ -32,7 +32,7 @@ import scipy.sparse as sp
 
 ap = argparse.ArgumentParser()
 ap.add_argument("steps")
-ap.add_argument("out")
+ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
 args = ap.parse_args()
 
@@ -62,12 +62,12 @@ on_screen = lambda c: c["w"] >= 4 and c["h"] >= 4 and c["y"] + c["h"] >= 0 and c
 is_field = lambda c: matches(
     r"^(textarea|input (text|search|email|password|tel|url|number)|textbox|searchbox|combobox)$", c["kind"]
 )
-# reads like the action that finishes what you typed, or like turning something down
+# reads like the action that finishes what you typed: one of these words, whole (no letter, mark, digit or _ beside it)
 submit_like = lambda c: matches(
-    r"\b(send|submit|go|search|post|reply|comment|save|continue|next|sign in|log in|login|apply|ask)\b",
+    r"(?<![\p{L}\p{M}\p{N}_])(send|submit|go|search|post|reply|comment|save|continue|next|sign in|log in|login|apply|ask)"
+    r"(?![\p{L}\p{M}\p{N}_])",
     c["label"].lower(),
 )
-dismissive = lambda c: matches(r"^(clear|reset|cancel|close|dismiss|decline|no thanks|skip|back)\b", c["label"].lower())
 
 
 def vocabulary(items, n):
@@ -77,7 +77,6 @@ def vocabulary(items, n):
 
 
 KINDS = vocabulary((c["kind"] for s in train for c in s["controls"]), 30)
-BOXES = vocabulary((c["box"] for s in train for c in s["controls"]), 15)
 # the columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:")
 WORDS = [
     *(f"w:{w}" for w in vocabulary((w for s in train for c in s["controls"] for w in control_words(c)), 1500)),
@@ -88,7 +87,7 @@ COLUMN = {w: j for j, w in enumerate(WORDS)}
 
 
 def describe(step):
-    """One dict of features per control except the focused one (it is already there), in the order ranker.json lists them.
+    """One dict of features per control except the focused one (it is already there), always in the same order: the columns'.
     Every count is computed once per page, so a page of thousands of controls stays cheap."""
     page, focus = step["page"], step["focus"]
     focused = next((c for c in step["controls"] if c["i"] == focus), None)
@@ -101,8 +100,6 @@ def describe(step):
     # how much a control stands out by being a coloured, filled shape; 0 = the most colourful control on screen
     sat_rank = rank_of(sorted(shown, key=lambda c: -(c["sat"] if c["fill"] >= 0.5 else 0)))
     font_rank = rank_of(sorted(shown, key=lambda c: -c["font"]))  # 0 = the largest type on screen
-    heading_rank = rank_of(c for c in controls if c["head"])
-    content_rank = rank_of(c for c in controls if (c["art"] or c["main"]) and not c["chrome"])
     kind_count = collections.Counter(c["kind"] for c in controls)
     kind_seen = collections.Counter()
     label_count = collections.Counter(c["label"].strip().lower() for c in controls)
@@ -115,20 +112,11 @@ def describe(step):
     in_form = lambda c, form: form >= 0 and c["form"] == form
     focus_form = focused["form"] if focused else -1
     empty_left = sum(not c["filled"] and in_form(c, focus_form) for c in fields if c["i"] != focus)
-    # how much of what is on screen is covered by something on top, and by which layer
+    # how much of what is on screen is covered by something on top
     known = [c for c in controls if c["hit"] >= 0]
     occluded_share = sum(c["hit"] == 0 for c in known) / len(known) if known else 0
-    layer_size = collections.Counter(c["layer"] for c in controls if c["layer"] >= 0)
-    layer_known = collections.Counter(c["layer"] for c in known if c["layer"] >= 0)
-    layer_hits = collections.Counter(c["layer"] for c in known if c["hit"] == 1 and c["layer"] >= 0)
     region_size = collections.Counter(c["region"] for c in controls if c["region"] >= 0)
-    same = (
-        lambda c, key: bool(focused) and c[key] >= 0 and c[key] == focused[key]
-    )  # in the focused control's layer or region
-    title_words = set(words(f"{page['title']} {page['h1']}"))
-    query_words = set(words(page["query"]))
     for c in controls:
-        label = set(words(c["label"]))
         segments = [p for p in href_path(c).split("/") if p]
         in_focus_form = in_form(c, focus_form)
         yield (
@@ -148,7 +136,6 @@ def describe(step):
                 "page_scroll": page["scroll"],
                 # what it is
                 "kind": KINDS.get(c["kind"], -1),
-                "box": BOXES.get(c["box"], -1),
                 "same_kind_rank": kind_seen[c["kind"]],
                 "same_kind_count": kind_count[c["kind"]],
                 "inputs_on_screen": inputs_shown,
@@ -159,18 +146,13 @@ def describe(step):
                 # where it sits relative to the control you are in
                 "nothing_focused": focus < 0,
                 "index_delta": c["i"] - focus if focused else 0,
-                "focus_dx": (c["x"] - focused["x"]) / 1280 if focused else 0,
                 "focus_dy": (c["y"] - focused["y"]) / 900 if focused else 0,
                 "focus_dist": math.hypot(c["x"] - focused["x"], c["y"] - focused["y"]) / 1000 if focused else 0,
                 "focus_filled": bool(focused and focused["filled"]),
-                "focus_in_layer": bool(focused) and focused["layer"] >= 0,
-                "same_layer": same(c, "layer"),
-                "same_region": same(c, "region"),
+                "same_region": bool(focused) and c["region"] >= 0 and c["region"] == focused["region"],
                 # its form: the submit button, the first field, how much is still empty
-                "required": c["required"],
                 "is_submit": c["submit"],
                 "submit_like": submit_like(c),
-                "dismissive": dismissive(c),
                 "first_field": is_field(c) and c["form"] >= 0 and first_field[c["form"]] == c["i"],
                 "form_fields": form_fields[c["form"]] if c["form"] >= 0 else 0,
                 "in_focus_form": in_focus_form,
@@ -180,54 +162,34 @@ def describe(step):
                 # how it looks
                 "fill": c["fill"],
                 "sat": c["sat"],
-                "lum": c["lum"],
                 "round": c["round"],
                 "bold": c["bold"],
-                "pointer": c["pointer"],
                 "icon": c["icon"],
                 "sat_rank": sat_rank.get(c["i"], -1),
-                # the stack of layers above the page: on top or covered, its own layer's size and place, what the site is presenting
+                # the stack of layers above the page: on top or covered, how much of the view its layer covers and how high it is
+                # stacked, and the size of its region
                 "hit": c["hit"],
                 "occluded_share": occluded_share,
-                "in_layer": c["layer"] >= 0,
                 "lcover": c["lcover"],
-                "lw": c["lw"],
-                "lh": c["lh"],
                 "lz": c["lz"],
-                "ledge": c["ledge"],
-                "layer_size": layer_size[c["layer"]] if c["layer"] >= 0 else 0,
-                "layer_hit_share": layer_hits[c["layer"]] / layer_known[c["layer"]] if layer_known[c["layer"]] else 1,
                 "foreground": occluded_share if c["layer"] >= 0 and c["hit"] == 1 else 0,
                 "region_size": region_size[c["region"]] if c["region"] >= 0 else 0,
-                "in_dialog": c["dialog"],
-                "bar": c["bar"],
-                "fixed": c["fixed"],
-                # content or frame: a headline (heading level, which heading, type size next to the running text), in an article
-                # or main, in the site's frame, which of the content's controls it is
+                # content or frame: a headline (heading level, type size next to the running text, which is largest), in the frame
                 "heading": c["head"],
-                "heading_rank": heading_rank.get(c["i"], -1),
                 "font": c["font"] / page["base"],
                 "font_rank": font_rank.get(c["i"], -1),
-                "in_article": c["art"],
-                "in_main": c["main"],
                 "in_frame": c["chrome"],
-                "content_rank": content_rank.get(c["i"], -1),
-                # one of many alike (cards, results, rows; which one), with a picture, in running text, said or linked again
+                # one of many alike (cards, results, rows; which one), in running text, said or linked again
                 "alike": c["like"],
                 "alike_index": c["at"],
-                "image": c["img"],
                 "prose": c["prose"],
                 "label_repeats": label_count[c["label"].strip().lower()] - 1 if c["label"].strip() else 0,
                 "href_repeats": href_count[href_path(c)] - 1 if href_path(c) else 0,
-                # where it leads: another site, a spot on this page, how deep, a slug of words or a number (an article, a product)
-                "external": c["ext"],
-                "fragment": c["href"].startswith("#"),
+                # where it leads: how deep, a slug of words or a number (an article, a product)
                 "href_depth": len(segments),
                 "slug_words": len([w for w in regex.split(r"[-_]+", segments[-1]) if w]) if segments else 0,
                 "href_number": matches(r"[0-9]{3,}", href_path(c)),
-                # what it says next to what the page is about
-                "title_overlap": len(label & title_words) / len(label) if label else 0,
-                "query_overlap": len(label & query_words) / len(label) if label else 0,
+                # how much the page reads
                 "page_prose": page["prose"],
             },
         )
@@ -236,7 +198,7 @@ def describe(step):
 
 FEATURES = list(
     next(f for s in train for _, f in describe(s))
-)  # ranker.json lists them; after them, a 0/1 column per word
+)  # the columns: these, then a 0/1 column per word
 
 
 def rows(steps_):
@@ -279,7 +241,7 @@ params = {
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
     "feature_fraction": 0.8,
-    "seed": 0,
+    "seed": 1,
     "deterministic": True,  # with row-wise histograms, the same data gives the same trees on every run
     "force_row_wise": True,
     "verbose": -1,
@@ -315,7 +277,7 @@ if held:
     report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 
-# The thresholds in ranker.json as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
+# The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
 # other, the shortest decimal that still splits the training values the same way and stays near the middle of the gap between them,
 # where LightGBM put it (0.35, not 0.35000000000000003).
 by_column = X.tocsc()
@@ -341,7 +303,7 @@ def threshold(j, t):
 
 
 def tree(node):
-    """ranker.json: a tree as nested [column, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js only
+    """the model: a tree as nested [column, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js only
     orders the controls by the sum, and two decimals leave that order as it was). A split whose sides round the same is left out."""
     if "leaf_index" in node:
         return round(node["leaf_value"] * 100)
@@ -359,16 +321,22 @@ def columns(t):
 
 
 trees = [tree(info["tree_structure"]) for info in model.dump_model()["tree_info"]]
-# only the columns some tree asks about go in ranker.json, numbered in order: those features, then those words
+# only the columns some tree asks about go in the model, numbered in order: those features, then those words
 used = sorted({j for t in trees for j in columns(t)})
 column = {j: k for k, j in enumerate(used)}
 renumber = lambda t: [column[t[0]], t[1], renumber(t[2]), renumber(t[3])] if isinstance(t, list) else t
 ranker = {
     "features": [FEATURES[j] for j in used if j < len(FEATURES)],
     "kinds": KINDS,
-    "boxes": BOXES,
     "words": [WORDS[j - len(FEATURES)] for j in used if j >= len(FEATURES)],
     "trees": [renumber(t) for t in trees],
 }
-pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written to {args.out}")
+# The model goes into jab.js, as the JSON inside its MODEL string. That string is in single quotes and taken as is, so the JSON
+# must hold no single quote and no backslash.
+model_json = json.dumps(ranker, separators=(",", ":"), ensure_ascii=False)
+assert "'" not in model_json and "\\" not in model_json
+jab = pathlib.Path(args.jab)
+source, found = regex.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_json + "'", jab.read_text(encoding="utf-8"))
+assert found == 1, f"{jab} has no MODEL string"
+jab.write_text(source, encoding="utf-8")
+print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab}")
