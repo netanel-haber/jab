@@ -13,9 +13,11 @@ pop-ups; six languages), labelled by rule and counted at half weight; all collec
 {"split": "train"|"eval", "type": the kind of page ("real" or "live" for a real site), "page": {"path", "title", "desc", "scroll",
 "h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
 next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
-about, left out (optional)}.
-Prints, for the "eval" steps, overall and per kind of page: whether the first stop is wanted, how many of the 4 stops are, whether the
-target is first and whether it is within the 4. --all also trains on them, for the file you ship."""
+about, left out of training (optional)}.
+Prints, for the "eval" steps, overall and per kind of page, with the trees as written into jab.js and every control ranked as jab.js
+ranks them: whether the first stop is wanted (as training counts it: a pick already visited is not), how often it is a control the
+label says nothing about, how many of the 4 stops are wanted, whether the target is first and whether it is within the 4. --all also
+trains on them, for the file you ship."""
 
 import argparse
 import bisect
@@ -201,16 +203,17 @@ FEATURES = list(
 )  # the columns: these, then a 0/1 column per word
 
 
-def rows(steps_):
+def rows(steps_, every=False):
     """The rows the model sees, every step's controls one after another: the features, then a 0/1 per word of the control, of the
-    text around it and of the page, as one sparse matrix; and each step's control ids."""
+    text around it and of the page, as one sparse matrix; and each step's control ids. Training leaves out the controls the label
+    says nothing about; every=True keeps them, as jab.js ranks them all."""
     dense, cols, ids = [], [], []
     for s in steps_:
         page = [f"p:{w}" for w in page_words(s["page"])]
         ids.append([])
         unjudged = set(s.get("unjudged", ()))
         for c, f in describe(s):
-            if c["i"] in unjudged:
+            if c["i"] in unjudged and not every:
                 continue
             ids[-1].append(c["i"])
             dense.append(list(f.values()))
@@ -250,31 +253,6 @@ params = {
 # small has to spend most of itself on the real sites, which are what jab is for.
 weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(train, ids)])
 model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=weight), num_boost_round=70)
-
-
-def report(name, steps_):
-    """Over all steps and per kind of page: is the first stop wanted (the target, a pick or an also-fine one), how many of the 4 stops
-    are, is the target first, is it within the 4."""
-    X, ids = rows(steps_)
-    scores = model.predict(X, raw_score=True)
-    tally = collections.defaultdict(lambda: np.zeros(5))
-    start = 0
-    for s, i in zip(steps_, ids):
-        stops = [i[j] for j in np.argsort(-scores[start : start + len(i)], kind="stable")[:4]]
-        start += len(i)
-        if stops:
-            wanted = {s["target"], *s["picks"], *s["ok"]}
-            row = [stops[0] in wanted, len(wanted & set(stops)) / 4, stops[0] == s["target"], s["target"] in stops, 1]
-            for kind in {"all", s["type"]}:
-                tally[kind] += row
-    print(f"{name}:")
-    for kind, (first, wanted, top1, top4, n) in sorted(tally.items(), key=lambda kv: (kv[0] != "all", kv[0])):
-        print(f"  {kind:>9}: first stop wanted {first / n:.3f}  stops wanted {wanted / n:.3f}", end="")
-        print(f"  top-1 {top1 / n:.3f}  top-4 {top4 / n:.3f}  ({n:.0f} steps)")
-
-
-if held:
-    report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
@@ -331,6 +309,54 @@ ranker = {
     "words": [WORDS[j - len(FEATURES)] for j in used if j >= len(FEATURES)],
     "trees": [renumber(t) for t in trees],
 }
+
+
+def predict(M):
+    """jab.js's score for every row of M: the sum of the trees as written into it, a value at or below a threshold going left. In
+    blocks of rows, to keep the dense copy small."""
+    out = np.zeros(M.shape[0])
+    for start in range(0, M.shape[0], 50000):
+        D, part = M[start : start + 50000, used].toarray(), out[start : start + 50000]
+
+        def walk(node, at):
+            if not isinstance(node, list):
+                part[at] += node
+                return
+            left = D[at, node[0]] <= node[1]
+            walk(node[2], at[left])
+            walk(node[3], at[~left])
+
+        for t in ranker["trees"]:
+            walk(t, np.arange(len(D)))
+    return out
+
+
+def report(name, steps_):
+    """Over all steps and per kind of page, for the trees as written into jab.js, ranking every control as jab.js does: is the first
+    stop wanted (what training rewards: the target, a pick still ahead of it, an also-fine one; not a pick already visited), is it
+    a control the label says nothing about, how many of the 4 stops are wanted, is the target first, is it within the 4."""
+    X, ids = rows(steps_, every=True)
+    scores = predict(X)
+    tally = collections.defaultdict(lambda: np.zeros(6))
+    start = 0
+    for s, i in zip(steps_, ids):
+        stops = [i[j] for j in np.argsort(-scores[start : start + len(i)], kind="stable")[:4]]
+        wanted = {c for c, r in zip(i, relevance(s, i)) if r}
+        start += len(i)
+        if stops:
+            unknown = stops[0] in s.get("unjudged", ())
+            row = [stops[0] in wanted, unknown, len(wanted & set(stops)) / 4, stops[0] == s["target"], s["target"] in stops, 1]
+            for kind in {"all", s["type"]}:
+                tally[kind] += row
+    print(f"{name}:")
+    for kind, (first, unknown, wanted, top1, top4, n) in sorted(tally.items(), key=lambda kv: (kv[0] != "all", kv[0])):
+        print(f"  {kind:>9}: first stop wanted {first / n:.3f}", end=f" (unjudged {unknown / n:.3f})" if unknown else "")
+        print(f"  stops wanted {wanted / n:.3f}  top-1 {top1 / n:.3f}  top-4 {top4 / n:.3f}  ({n:.0f} steps)")
+
+
+if held:
+    report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
+
 # The model goes into jab.js, as the JSON inside its MODEL string. That string is in single quotes and taken as is, so the JSON
 # must hold no single quote and no backslash.
 model_json = json.dumps(ranker, separators=(",", ":"), ensure_ascii=False)

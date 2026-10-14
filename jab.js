@@ -19,9 +19,24 @@
   const cut = (s, n) => Array.from(s).slice(0, n).join("");
   const text = (e, n = 60) => cut((e?.innerText ?? e?.textContent ?? "").replace(/\s+/g, " ").trim(), n);
   const path = (url) => url.replace(/^https?:\/\/[^/]+/, "");
+  // the element around e, out of a shadow root to its host: what is inside a web component sits where the component sits
+  const up = (e) => e.parentElement ?? e.parentNode?.host ?? null;
+  // closest() and contains() through shadow roots: inside the web component, then from the component on out
+  const near = (e, sel) => {
+    for (; e; e = e.getRootNode().host) {
+      const c = e.closest(sel);
+      if (c) return c;
+    }
+    return null;
+  };
+  const holds = (a, e) => {
+    for (; e; e = e.getRootNode().host) if (a.contains(e)) return true;
+    return false;
+  };
+  // usable: not disabled (by itself or by its fieldset), not inert (by itself or by what it is in), and drawn
   const alive = (e) =>
-    !e.disabled &&
-    !e.inert &&
+    !e.matches(":disabled") &&
+    !near(e, "[inert]") &&
     e.getAttribute("aria-hidden") !== "true" &&
     e.checkVisibility({ visibilityProperty: true }) &&
     e.getClientRects().length > 0;
@@ -55,20 +70,6 @@
     let a = document.activeElement;
     while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
     return a;
-  };
-  // the element around e, out of a shadow root to its host: what is inside a web component sits where the component sits
-  const up = (e) => e.parentElement ?? e.parentNode?.host ?? null;
-  // closest() and contains() through shadow roots: inside the web component, then from the component on out
-  const near = (e, sel) => {
-    for (; e; e = e.getRootNode().host) {
-      const c = e.closest(sel);
-      if (c) return c;
-    }
-    return null;
-  };
-  const holds = (a, e) => {
-    for (; e; e = e.getRootNode().host) if (a.contains(e)) return true;
-    return false;
   };
 
   // Every focusable, visible control, and the facts about each that train.py's features use. Nothing outlives the call.
@@ -126,7 +127,9 @@
       for (let s; (s = t?.shadowRoot?.elementFromPoint(x, y)) && s != t; ) t = s;
       return t && (holds(e, t) || holds(t, e)) ? 1 : 0;
     };
-    let els = deep(document).filter(alive);
+    // an open modal dialog leaves the rest of the page inert
+    const modal = document.querySelector(":modal");
+    let els = deep(document).filter((e) => alive(e) && (!modal || holds(modal, e)));
     if (els.length > 5000) {
       // a safety valve for endless pages: the control you are in and its form, then what is on screen, then the rest in page order
       const form = near(active(), "form");
@@ -418,6 +421,8 @@
   const words = (s) => (s.toLowerCase().match(/\p{L}[\p{L}\p{M}]+/gu) ?? []).filter((w) => !STOP.has(w));
   const hrefPath = (c) => c.href.split("#")[0].split("?")[0]; // where a link leads, without its query and fragment
   const length = (s) => [...s].length;
+  // on screen as the trees learned it: within the 1280x900 every training page was captured at. Measuring a window against its own
+  // size instead picked worse on the hand-labelled test pages; that needs training pages captured at other sizes first.
   const onScreen = (c) => c.w >= 4 && c.h >= 4 && c.y + c.h >= 0 && c.y <= 900 && c.x <= 1280;
   const isField = (c) =>
     /^(textarea|input (text|search|email|password|tel|url|number)|textbox|searchbox|combobox)$/.test(c.kind); // controls you type into
