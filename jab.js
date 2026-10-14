@@ -30,7 +30,7 @@
     text(e.labels?.[0]) ||
     (e.getAttribute("aria-labelledby") ?? "")
       .split(/\s+/)
-      .map((id) => text(document.getElementById(id)))
+      .map((id) => text(e.getRootNode().getElementById(id)))
       .join(" ")
       .trim() ||
     e.placeholder ||
@@ -56,30 +56,46 @@
     while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
     return a;
   };
+  // the element around e, out of a shadow root to its host: what is inside a web component sits where the component sits
+  const up = (e) => e.parentElement ?? e.parentNode?.host ?? null;
+  // closest() and contains() through shadow roots: inside the web component, then from the component on out
+  const near = (e, sel) => {
+    for (; e; e = e.getRootNode().host) {
+      const c = e.closest(sel);
+      if (c) return c;
+    }
+    return null;
+  };
+  const holds = (a, e) => {
+    for (; e; e = e.getRootNode().host) if (a.contains(e)) return true;
+    return false;
+  };
 
   // Every focusable, visible control, and the facts about each that train.py's features use. Nothing outlives the call.
   const collect = () => {
     const regions = new Map(),
+      forms = new Map(),
       layers = new Map(),
       groups = new Map();
     // the repeated item a control sits in (a card, a result, a row, a menu entry): how many siblings look alike (same tag and
     // first class), and which of them this one is
     const sig = (el) => `${el.tagName} ${(el.getAttribute("class") ?? "").trim().split(/\s+/)[0]}`;
     const itemOf = (e) => {
-      for (let p = e, k = 0; k < 5 && p.parentElement; p = p.parentElement, k++) {
-        if (!groups.has(p.parentElement)) {
+      for (let p = e, k = 0; k < 5 && up(p); p = up(p), k++) {
+        // p's siblings: those in its parent, or at the top of the same shadow root
+        if (!groups.has(p.parentNode)) {
           const g = new Map();
-          for (const s of p.parentElement.children) g.get(sig(s))?.push(s) ?? g.set(sig(s), [s]);
-          groups.set(p.parentElement, g);
+          for (const s of p.parentNode.children) g.get(sig(s))?.push(s) ?? g.set(sig(s), [s]);
+          groups.set(p.parentNode, g);
         }
-        const like = groups.get(p.parentElement).get(sig(p));
+        const like = groups.get(p.parentNode).get(sig(p));
         if (like.length >= 3) return { el: p, n: like.length, at: like.indexOf(p) };
       }
       return null;
     };
     // the nearest ancestor that sits in its own layer above the page: fixed, or positioned with a z-index
     const layerOf = (el) => {
-      for (let p = el.parentElement; p && p != document.documentElement; p = p.parentElement) {
+      for (let p = up(el); p && p != document.documentElement; p = up(p)) {
         if (!layers.has(p)) {
           const st = getComputedStyle(p),
             z = parseInt(st.zIndex);
@@ -100,22 +116,23 @@
       }
       return null;
     };
-    // is the control what you would hit at its centre (1), covered by something on top (0), or not on screen (-1)?
+    // is the control what you would hit at its centre (1), covered by something on top (0), or not on screen (-1)? The page names
+    // the outermost web component there; that component's shadow root names what is inside it, and so on down
     const topmost = (e, r) => {
       if (r.width < 4 || r.height < 4 || !inView(r)) return -1;
-      const t = document.elementFromPoint(
-        Math.min(Math.max(r.x + r.width / 2, 0), innerWidth - 1),
-        Math.min(Math.max(r.y + r.height / 2, 0), innerHeight - 1),
-      );
-      return t && (t == e || e.contains(t) || t.contains(e) || t.shadowRoot?.contains(e)) ? 1 : 0;
+      const x = Math.min(Math.max(r.x + r.width / 2, 0), innerWidth - 1),
+        y = Math.min(Math.max(r.y + r.height / 2, 0), innerHeight - 1);
+      let t = document.elementFromPoint(x, y);
+      for (let s; (s = t?.shadowRoot?.elementFromPoint(x, y)) && s != t; ) t = s;
+      return t && (holds(e, t) || holds(t, e)) ? 1 : 0;
     };
     let els = deep(document).filter(alive);
     if (els.length > 5000) {
       // a safety valve for endless pages: the control you are in and its form, then what is on screen, then the rest in page order
-      const form = active().closest("form");
+      const form = near(active(), "form");
       const keep = new Set(
         [
-          ...els.filter((e) => e == active() || form?.contains(e)),
+          ...els.filter((e) => e == active() || (form && holds(form, e))),
           ...els.filter((e) => inView(e.getBoundingClientRect())),
           ...els,
         ].slice(0, 5000),
@@ -124,8 +141,8 @@
     }
     const controls = els.map((e, i) => {
       const r = e.getBoundingClientRect(),
-        b = e.parentElement?.closest(BOX),
-        f = e.form ?? e.closest("form");
+        b = near(up(e), BOX),
+        f = e.form ?? near(e, "form");
       const st = getComputedStyle(e),
         lay = layerOf(e);
       // how it looks: filled or not, how colourful, how round, how bold
@@ -133,17 +150,18 @@
         0, 0, 0, 0,
       ];
       let before = "";
-      for (let p = e; p && !before; p = p.parentElement) before = text(p.previousElementSibling, 20);
+      for (let p = e; p && !before; p = up(p)) before = text(p.previousElementSibling, 20);
       if (b && !regions.has(b)) regions.set(b, regions.size);
+      if (f && !forms.has(f)) forms.set(f, forms.size);
       // what it is about: a heading in or around it, the size of its type, the card or paragraph it sits in
-      const hd = e.closest(HEADING) ?? e.querySelector(HEADING),
+      const hd = near(e, HEADING) ?? e.querySelector(HEADING),
         it = itemOf(e),
-        block = e.parentElement?.closest("p,li,td,dd,blockquote,figcaption"),
-        frame = e.closest(CHROME);
+        block = near(up(e), "p,li,td,dd,blockquote,figcaption"),
+        frame = near(e, CHROME);
       return {
         i,
         n: els.length,
-        form: f ? [...document.forms].indexOf(f) : -1,
+        form: f ? forms.get(f) : -1,
         action: cut(path(f?.getAttribute("action") ?? ""), 30),
         submit: !!f && e.matches(SUBMIT),
         filled: e.matches(TYPED) ? !!e.value : e.matches(EDITABLE) && !!e.innerText.trim(),
@@ -164,7 +182,7 @@
         ph: e.placeholder || "",
         href: cut(path(e.getAttribute("href") ?? ""), 40),
         before,
-        parent: text(e.parentElement, 20),
+        parent: text(up(e), 20),
         x: q(r.x),
         y: q(r.y),
         w: q(r.width),
@@ -172,7 +190,7 @@
         head: hd ? (/^H\d$/.test(hd.tagName) ? Number(hd.tagName[1]) : Number(hd.getAttribute("aria-level")) || 2) : 0,
         font: Math.round(parseFloat((hd && e.contains(hd) ? getComputedStyle(hd) : st).fontSize) || 0),
         // in the site's frame (header, nav, footer, sidebar), unless that frame belongs to an article
-        chrome: !!frame && !frame.closest("article,[role=article],main,[role=main]"),
+        chrome: !!frame && !near(frame, "article,[role=article],main,[role=main]"),
         like: it ? it.n : 0,
         at: it ? it.at : -1,
         prose: block ? text(block, 400).length : 0,
