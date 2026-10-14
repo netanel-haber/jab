@@ -202,20 +202,24 @@
   };
   const note = (message) => setTimeout((n) => n.remove(), 4000, draw("note", message));
 
-  // A session: our top 4 picks and their badges. Ctrl+Q walks them; anything else you do ends it, and so do 10 s without a press.
+  // A session: our top 4 picks and their badges. The first Ctrl+Q only lights pick 1 (lit): nothing is focused, so nothing opens,
+  // and Enter uses it. A tap of Ctrl+Q, or Ctrl+Q and a digit, is you choosing: the focus goes to that pick, and from there on your
+  // keys are the page's again. Anything else you do ends the session, and so do 10 s without a press.
   let ses = null,
     timer;
-  // each badge sits on the top-left corner of its control, or at the screen edge with an arrow when the control is off screen; the focused one is drawn stronger
+  // each badge sits on the top-left corner of its control, or at the screen edge with an arrow when the control is off screen; the
+  // lit or focused one is drawn stronger, and the lit one has ↵ for Enter
   const show = () =>
     ses?.badges.forEach((badge, i) => {
       const r = ses.els[i].getBoundingClientRect();
       const arrow =
         r.top >= innerHeight ? "↓" : r.bottom <= 0 ? "↑" : r.left >= innerWidth ? "→" : r.right <= 0 ? "←" : "";
-      badge.textContent = `${i + 1}${arrow}`;
+      const lit = ses.lit && i == 0;
+      badge.textContent = `${i + 1}${arrow}${lit ? " ↵" : ""}`;
       badge.hidden = !r.width && !r.height; // the page has hidden it
       badge.classList.toggle("off", !!arrow);
-      badge.classList.toggle("now", ses.els[i] == active());
-      badge.style.cssText = `left: ${Math.min(Math.max(2, r.left - 8), innerWidth - 30)}px; top: ${Math.min(Math.max(2, r.top - 8), innerHeight - 22)}px`;
+      badge.classList.toggle("now", lit || ses.els[i] == active());
+      badge.style.cssText = `left: ${Math.min(Math.max(2, r.left - 8), innerWidth - 44)}px; top: ${Math.min(Math.max(2, r.top - 8), innerHeight - 22)}px`;
     });
   const end = () => {
     clearTimeout(timer);
@@ -228,37 +232,27 @@
   };
   for (const type of ["scroll", "resize", "focusin"]) addEventListener(type, show, { capture: true, passive: true });
   setInterval(show, 300); // catches layout shifts that fire no event
-  // focus left our picks (checked once it has moved, so a web component's retargeted events cannot fool it)
-  addEventListener("focusout", () => setTimeout(() => ses && !ses.els.includes(active()) && end()), true);
+  // focus left our picks after jab moved it there (checked once it has moved, so a web component's retargeted events cannot fool it)
+  addEventListener("focusout", () => setTimeout(() => ses && !ses.lit && !ses.els.includes(active()) && end()), true);
   // typing, clicking, submitting, navigating: the next press re-ranks from there
   for (const type of ["input", "submit", "pointerdown", "popstate", "hashchange", "pagehide"])
     addEventListener(type, end, true);
   // a text field fires "change" when focus leaves it, which is jab moving on: only a select, checkbox or radio changing counts
   addEventListener("change", (e) => !e.target.matches?.(TYPED) && end(), true);
-  // Quiet focus: the page does not hear about the focus jab gives (no focus or focusin event reaches it), so a field that opens
-  // suggestions, a date picker or a search overlay when it gets the focus stays closed while you look through the stops. Once you
-  // use the control (a key other than Tab or Escape, a click in it, a paste), the page gets those events, as if you had just arrived.
-  let landing = false, // jab is moving the focus right now
-    quiet = null; // the control jab focused, while the page has not heard of it
-  for (const type of ["focus", "focusin"])
-    addEventListener(
-      type,
-      (e) => (landing ? e.stopImmediatePropagation() : e.composedPath()[0] == quiet && (quiet = null)),
-      true,
-    );
-  const wake = () => {
-    const el = quiet;
-    quiet = null;
-    if (el && active() == el) {
-      el.dispatchEvent(new FocusEvent("focus"));
-      el.dispatchEvent(new FocusEvent("focusin", { bubbles: true, composed: true }));
-    }
+  // a field you type into: while it is lit, the keys you press go into it, and Enter only puts the focus there
+  const typable = (el) => (el.matches(TYPED) && !el.readOnly) || el.isContentEditable;
+  // Enter or typing on the lit pick: end the session and put the focus there. Enter (press) also clicks it, unless it is a field you
+  // type into: a button is pressed, a link followed, a box ticked, a read-only field (a date picker, mostly) opened.
+  const use = (el, press) => {
+    end();
+    if (!el.isConnected) return note("That control has left the page: press Ctrl+Q again.");
+    el.focus();
+    if (press && !typable(el)) el.click();
+    else if (active() != el) note("jab could not move the focus here: the page keeps it where it is.");
   };
-  addEventListener("pointerdown", (e) => quiet && e.composedPath().includes(quiet) && wake(), true);
-  addEventListener("beforeinput", wake, true);
-  // Ctrl+Q types nothing and Chrome does not use it; any other key (Enter, Escape, arrows, Tab, ...) ends the session
-  // While Ctrl+Q is held down, a digit 1-4 goes straight to that stop; any other time Ctrl+digit is left to Chrome.
-  // Inside a session, Ctrl+Q moves to the next stop only on a tap (let go within 0.4 s, no digit): holding it is for choosing.
+  // Ctrl+Q types nothing and Chrome does not use it. While Ctrl+Q is held down, a digit 1-4 puts the focus on that pick; any other
+  // time Ctrl+digit is left to Chrome. Inside a session, Ctrl+Q moves the focus to the next pick only on a tap (let go within 0.4 s,
+  // no digit): holding it is for choosing.
   let held = false,
     tapped = 0;
   const ctrl = (e) => e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
@@ -267,13 +261,12 @@
   // Focus pick i. A pick that does not take the focus (the page has since hidden it, or a pop-up keeps the focus to itself)
   // is replaced by the next control in the ranking, or dropped when the ranking runs out; with no pick left the session ends.
   const land = (i) => {
-    while (ses?.els.length) {
+    ses.lit = false;
+    while (ses.els.length) {
       i %= ses.els.length;
       const el = ses.els[i];
-      landing = true;
       el.focus();
-      landing = false;
-      if (active() == el) return (quiet = el), touch(), show();
+      if (active() == el) return touch(), show();
       if (ses.rest.length) ses.els[i] = ses.rest.shift();
       else {
         ses.els.splice(i, 1);
@@ -284,8 +277,8 @@
     note("jab could not move the focus here: the page keeps it where it is.");
   };
   const step = () => {
-    // walk the stored picks, no recompute; going round to 1 again flashes its badge
-    const next = (ses.els.indexOf(active()) + 1) % ses.els.length;
+    // walk the stored picks, no recompute, from the lit or focused one; going round to 1 again flashes its badge
+    const next = ((ses.lit ? 0 : ses.els.indexOf(active())) + 1) % ses.els.length;
     if (next == 0) ses.badges[0].animate([{ transform: "scale(1.7)" }, { transform: "none" }], 450);
     land(next);
   };
@@ -300,12 +293,27 @@
     true,
   );
   addEventListener("blur", () => (held = tapped = 0));
+  // A key while pick 1 is lit: Enter uses it, a key that types a character goes into it when it is a field (the focus moves there
+  // first; the page's own shortcuts never see that key), Escape only ends the session. Any other key, and any key once the focus is
+  // on a pick, ends the session and does what it always does, where the focus is.
   addEventListener(
     "keydown",
     (e) => {
-      if (isPress(e) || digit(e) || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
-      if (e.key != "Tab" && e.key != "Escape") wake(); // using the control, not leaving it
-      end();
+      if (!ses || isPress(e) || digit(e) || ["Control", "Shift", "Alt", "Meta", "AltGraph"].includes(e.key)) return;
+      if (!ses.lit) return end();
+      const el = ses.els[0],
+        plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+      if (e.key == "Enter" && plain && !e.shiftKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        use(el, true);
+      } else if (e.key.length == 1 && (plain || e.getModifierState("AltGraph")) && typable(el)) {
+        e.stopImmediatePropagation(); // not cancelled: the character lands in the field
+        use(el, false);
+      } else {
+        if (e.key == "Escape") e.preventDefault(), e.stopImmediatePropagation();
+        end();
+      }
     },
     true,
   );
@@ -321,7 +329,7 @@
       if (e.repeat) return; // holding the keys down is one press
       held = true;
       if (n) {
-        // Ctrl+Q, then a digit: that stop
+        // Ctrl+Q, then a digit: the focus goes to that pick
         tapped = 0; // a digit, not a tap
         if (ses && n <= ses.els.length) land(n - 1);
         return;
@@ -364,10 +372,10 @@
           .map(([, el]) => el);
         const best = ranked.slice(0, 4); // the next 20 stand in for a pick that turns out not to take the focus
         if (!best.length) return note("jab found nothing to jump to here.");
-        ses = { els: best, rest: ranked.slice(4), badges: best.map((_, i) => draw("badge", i + 1)) };
+        ses = { els: best, rest: ranked.slice(4), badges: best.map((_, i) => draw("badge", i + 1)), lit: true };
+        best[0].scrollIntoView({ block: "nearest", inline: "nearest" }); // the first press only lights the best pick, in view
         show();
         touch();
-        land(0); // the first press lands on the best pick
       } catch (error) {
         note(`jab could not answer: ${error.message}`);
       }
