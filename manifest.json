@@ -12,8 +12,6 @@
   "homepage_url": "https://jab.run",
   "description": "Pressing Ctrl+Q will focus the control/field that the ranker assumes you want, based on the current page, focused elements, etc.",
   "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
     "128": "icon.png"
   }
 }
