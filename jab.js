@@ -1,7 +1,7 @@
-// jab: one file, two roles. In a page (content script) it finds the focusable controls, handles Ctrl+Q and draws the badges;
-// in the extension's service worker it ranks the controls with the LightGBM trees in ranker.json.
-// Nothing is cached per page: every press scores the page as it is right now.
-if (self.document) {
+// jab, in every page (a content script): finds the focusable controls, ranks them with the LightGBM trees at the end of this file
+// (written there by train.py), handles Ctrl+Q and draws the badges. Nothing is cached per page: every press scores the page as it is
+// right now.
+{
   const SEL =
     'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],[tabindex]:not([tabindex="-1"]),[role=button],[role=link],[role=textbox],[role=combobox],[role=searchbox],[role=checkbox],[role=tab],[role=menuitem]';
   const BOX =
@@ -213,7 +213,7 @@ if (self.document) {
     return { els, controls };
   };
 
-  // The overlay: numbered badges beside the four picks, a small spinning J while it works, and short notes so a failure is never silent.
+  // The overlay: numbered badges beside the four picks, and short notes so a failure is never silent.
   // It lives in a closed shadow root, so the page's own CSS and scripts cannot reach it; a constructed stylesheet is not blocked by a page's CSP.
   const host = Object.assign(document.createElement("div"), {
     id: "jab-overlay",
@@ -225,24 +225,17 @@ if (self.document) {
     .badge { position: fixed; min-width: 18px; height: 18px; padding: 0 3px; box-sizing: border-box; border-radius: 9px; background: #2b6f4b; color: #fff; opacity: .85; font: 700 11px/18px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
     .badge.now { background: #00e676; color: #00210e; outline: 2px solid #00210e; box-shadow: 0 0 0 4px rgba(0, 230, 118, .55), 0 2px 6px rgba(0, 0, 0, .4); transform: scale(1.15); z-index: 1; }
     .badge.off { opacity: .65; }
-    .note { position: fixed; right: 16px; bottom: 56px; max-width: 280px; padding: 6px 10px; border-radius: 6px; background: #1f4f35; color: #fff; font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 2px 6px rgba(0, 0, 0, .3); }
-    .spinner { position: fixed; right: 16px; bottom: 16px; width: 28px; height: 28px; font: 700 15px/28px system-ui, sans-serif; text-align: center; color: #2b8f58; opacity: 0; transition: opacity .2s; }
-    .spinner.on { opacity: .8; }
-    .spinner::before { content: ''; position: absolute; inset: 0; box-sizing: border-box; border: 2px solid rgba(43, 143, 88, .22); border-top-color: #2b8f58; border-radius: 50%; animation: turn .9s linear infinite; }
-    @keyframes turn { to { transform: rotate(360deg); } }`);
+    .note { position: fixed; right: 16px; bottom: 16px; max-width: 280px; padding: 6px 10px; border-radius: 6px; background: #1f4f35; color: #fff; font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 2px 6px rgba(0, 0, 0, .3); }`);
   root.adoptedStyleSheets = [sheet];
   const draw = (className, textContent) => {
     document.documentElement.append(host);
     return root.appendChild(Object.assign(document.createElement("div"), { className, textContent }));
   };
-  const spinner = draw("spinner", "J");
   const note = (message) => setTimeout((n) => n.remove(), 4000, draw("note", message));
 
   // A session: our top 4 picks and their badges. Ctrl+Q walks them; anything else you do ends it, and so do 10 s without a press.
   let ses = null,
-    timer,
-    busy = false,
-    gen = 0;
+    timer;
   // each badge sits on the top-left corner of its control, or at the screen edge with an arrow when the control is off screen; the focused one is drawn stronger
   const show = () =>
     ses?.badges.forEach((badge, i) => {
@@ -256,7 +249,6 @@ if (self.document) {
       badge.style.cssText = `left: ${Math.min(Math.max(2, r.left - 8), innerWidth - 30)}px; top: ${Math.min(Math.max(2, r.top - 8), innerHeight - 22)}px`;
     });
   const end = () => {
-    gen++; // an answer still on its way is dropped
     clearTimeout(timer);
     ses?.badges.forEach((badge) => badge.remove());
     ses = null;
@@ -278,7 +270,6 @@ if (self.document) {
   // While Ctrl+Q is held down, a digit 1-4 goes straight to that stop; any other time Ctrl+digit is left to Chrome.
   // Inside a session, Ctrl+Q moves to the next stop only on a tap (let go within 0.4 s, no digit): holding it is for choosing.
   let held = false,
-    pick = 0,
     tapped = 0;
   const ctrl = (e) => e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
   const isPress = (e) => e.code == "KeyQ" && ctrl(e);
@@ -325,7 +316,7 @@ if (self.document) {
 
   addEventListener(
     "keydown",
-    async (e) => {
+    (e) => {
       const n = digit(e);
       if (!isPress(e) && !n) return;
       if (!chrome.runtime?.id) return note("jab was reloaded: refresh this page to use it."); // a stale copy of this script leaves Ctrl+Q alone
@@ -334,24 +325,17 @@ if (self.document) {
       if (e.repeat) return; // holding the keys down is one press
       held = true;
       if (n) {
-        // Ctrl+Q, then a digit: that stop now, or as soon as the ranking arrives
+        // Ctrl+Q, then a digit: that stop
         tapped = 0; // a digit, not a tap
-        if (ses && n <= ses.els.length) {
-          land(n - 1);
-        } else if (busy) pick = n;
+        if (ses && n <= ses.els.length) land(n - 1);
         return;
       }
-      if (busy) return; // one press at a time
       if (ses?.els.every((el) => el.isConnected)) {
         tapped = performance.now(); // inside a session: the move waits for the keys to be let go (see keyup)
         return touch();
       }
       end(); // no session, or a pick left the page (re-rendered): start over
-      busy = true;
-      pick = 0;
-      const mine = gen,
-        from = active();
-      const delay = setTimeout(() => spinner.classList.add("on"), 120); // appears only if the work takes more than a blink
+      const from = active();
       try {
         const { els, controls } = collect();
         const paras = [...document.querySelectorAll("p")].slice(0, 400);
@@ -374,16 +358,7 @@ if (self.document) {
             ) || 16,
           scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
         };
-        const timeout = new Promise((_, fail) => setTimeout(() => fail(new Error("no answer within 5 s")), 5000));
-        const scores = await Promise.race([
-          timeout,
-          chrome.runtime.sendMessage({
-            controls,
-            focus: els.indexOf(from),
-            page,
-          }),
-        ]);
-        if (mine != gen || active() != from) return; // something happened while it ranked (typing, a click, ...): drop the answer
+        const scores = rank(JSON.parse(MODEL), controls, els.indexOf(from), page);
         // the best four; the focused control has no score (null)
         const ranked = scores
           .map((v, i) => [v, els[i]])
@@ -396,19 +371,15 @@ if (self.document) {
         ses = { els: best, rest: ranked.slice(4), badges: best.map((_, i) => draw("badge", i + 1)) };
         show();
         touch();
-        land(Math.min(pick || 1, best.length) - 1); // the first press lands on the best pick (or the stop a digit asked for)
+        land(0); // the first press lands on the best pick
       } catch (error) {
         note(`jab could not answer: ${error.message}`);
-      } finally {
-        clearTimeout(delay);
-        spinner.classList.remove("on");
-        busy = false;
       }
     },
     true,
   );
-} else {
-  // The ranker: the LightGBM trees in ranker.json (made by train.py) score every control of the page from cheap features (where it is,
+
+  // The ranker: the LightGBM trees in MODEL (below, made by train.py) score every control of the page from cheap features (where it is,
   // what it is, how it looks, what is on top, what reads as content, its words), no neural network.
   // rank(model, controls, focus, page): controls as collect() returns them, focus the index of the focused control or -1.
   // Returns one score per control (the higher, the sooner); null for the focused one.
@@ -608,9 +579,7 @@ if (self.document) {
     let k = 0;
     return all.map((c) => (c.i == focus ? null : scores[k++]));
   };
-  const model = fetch(chrome.runtime.getURL("ranker.json")).then((r) => r.json()); // loaded once per worker start, in milliseconds
-  chrome.runtime.onMessage.addListener(({ controls, focus, page }, _, send) => {
-    model.then((m) => send(rank(m, controls, focus, page)));
-    return true;
-  });
+  // The trees, as JSON (written here by train.py, see there). Only a press parses them, so a page that never asks never holds them.
+  const MODEL =
+    '{"features":["x","y","w","h","index","index_frac","count","screen_rank","on_screen_count","controls_above","page_scroll","kind","same_kind_rank","same_kind_count","inputs_on_screen","label_len","label_words","no_parent_text","before_len","nothing_focused","index_delta","focus_dx","focus_dy","focus_dist","focus_filled","same_region","is_submit","submit_like","first_field","form_fields","in_focus_form","after_focus","empty_fields_left","empty_field","fill","sat","round","bold","icon","sat_rank","hit","occluded_share","lcover","lz","ledge","layer_size","layer_hit_share","foreground","region_size","fixed","heading","font","font_rank","in_frame","content_rank","alike","alike_index","prose","label_repeats","href_repeats","href_depth","slug_words","href_number","title_overlap","page_prose"],"kinds":{"a":0,"button":1,"input text":2,"tab":3,"input checkbox":4,"link":5,"menuitem":6,"input email":7,"div":8,"select":9,"input search":10,"summary":11,"input submit":12,"input radio":13,"textarea":14,"input password":15,"input number":16,"span":17,"tabpanel":18,"li":19,"input tel":20,"region":21,"combobox":22,"iframe":23,"group":24,"listitem":25,"textbox":26,"img":27,"checkbox":28,"dialog":29},"boxes":{"":0,"section":1,"main":2,"footer":3,"nav":4,"header":5,"form":6,"navigation":7,"contentinfo":8,"aside":9,"tablist":10,"dialog":11,"fieldset":12,"menu":13,"search":14},"words":["w:item","w:search","w:docs","w:privacy","w:products","w:blog","w:home","w:login","w:company","w:get","w:resources","w:features","w:support","w:up","w:free","w:slide","w:careers","w:cookie","w:sign","w:ago","w:reviews","w:signup","w:opens","w:skip","w:pricing","w:logo","w:started","w:community","w:download","w:image","w:dp","w:partners","w:subscribe","w:demo","w:author","w:language","w:close","w:hl","w:register","w:accept","w:documentation","w:message","w:agree","w:max","w:sdk","w:sort","w:academics","w:xs","w:admissions","w:forgot","w:min","c:by","c:comments","c:free","c:start","c:log","c:started","c:docs","c:download","c:box","c:español","c:source","c:guides","c:request","c:outdoor","p:news","p:docs"],"trees":[[7,0,[31,0,[7,-1,[57,24,-37,-10],[36,0.0835,-19,20]],35],[3,0.04,[53,0,[48,0,3,21],[64,1.45,-22,18]],29]],[31,0,[2,0.06,[5,0.08121,-6,-20],[24,0,[39,-1,-21,[38,0,[34,0.035,[57,44,4,25],17],-7]],-25]],[20,1,36,5]],[40,0,[29,0,-22,13],[56,2,[28,0,[37,0.495,[31,0,[55,8,[10,3.04,-7,5],21],20],[1,0.03,2,15]],28],-15]],[40,-1,[31,0,-22,14],[34,0.68,[52,6,[20,0,3,16],[25,0,[2,0.074,-15,-3],7]],[2,0.02,-32,[15,42,14,-9]]]],[40,0,[25,0,[4,26,-10,-23],[20,2,20,-10]],[29,0,[2,0.066,[10,2.8,-14,1],[35,0.407,[52,3,9,1],13]],15]],[40,-1,[30,0,-20,14],[33,0,[37,0.495,[26,0,[24,0,[52,13,2,[47,0.144,-10,11]],-16],18],[25,0,5,14]],19]],[1,0.94,[31,0,[2,0.05,-8,[24,0,[40,0,[64,0,0,-28],[28,0,5,19]],[64,0,-22,2]]],17],[30,0,-18,12]],[40,-1,[25,0,-18,7],[36,0.03233,[20,0,[56,0,[55,12,[33,0,-3,16],24],-12],[20,2,18,-4]],[22,0.17,9,-1]]],[23,1.32546,[34,0.77,[2,0.098,[1,0.583,[25,0,-4,7],[27,0,-16,17]],[40,0,-7,[20,-1,-5,7]]],[22,0.217,9,-2]],-20],[40,0,[12,18,-3,-18],[56,3,[22,-0.03,-2,[22,0.17,[104,0,[25,0,[1,0.06,-4,[52,4,13,2]],12],29],-3]],-11]],[22,0.75,[20,0,[40,0,-11,[36,0.0745,[2,0.137,[0,0.074,-14,-3],[19,0,-10,7]],5]],[20,1,19,[20,7,5,-6]]],-17],[23,1.32546,[33,0,[35,0.1534,[40,0,[25,0,-11,4],[3,0.017,-17,[61,2,[38,0,[57,45,0,12],-6],8]]],8],14],-18],[1,1.794,[27,0,[2,0.05,-9,[20,-1,-4,[53,0,[20,12,[1,0.07,-3,[52,3,13,5]],-6],-8]]],11],[30,0,-19,10]],[22,0.46,[20,0,[38,0,[18,19,[3,0.03,[89,0,-9,30],0],[76,0,4,-27]],-8],[20,3,12,-1]],[1,1.74,-7,-20]],[40,0,[12,29,[64,1.95,[25,0,-5,8],-24],-17],[3,0.04,[27,0,[51,1.016,-4,[60,0,-18,11]],10],[16,0,-11,5]]],[20,18,[20,0,[56,0,[1,2.13,[38,0,2,-6],-19],[57,75,[89,0,-11,27],9]],[20,1,14,[51,0.93,-1,8]]],-11],[23,1.39596,[33,0,[37,0.495,[57,93,[3,0.03,[2,0.2,-9,7],-1],[51,0.99996,-12,15]],3],[20,-1,[25,0,4,-39],14]],-16],[23,1.8012,[53,0,[26,0,[51,0.9335,[7,0,-14,[39,3,5,[56,0,-1,-13]]],[52,1,11,2]],13],[1,0.23,-4,-18]],-17],[12,46,[2,0.027,-10,[20,-1,-3,[25,0,[104,0,[1,0.65,[1,0.05,[27,0,-8,10],5],[57,40,-6,11]],19],8]]],-10],[40,0,[64,1.85,[57,22,[12,9,[51,0.814,2,-22],-11],20],-22],[2,0.176,[47,0.693,[66,0,-1,8],10],[20,-1,-8,7]]],[1,2.217,[53,0,[3,0.017,-13,[38,0,[52,2,[20,-1,-1,[2,0.24,6,17]],1],-3]],[10,3.204,-11,-1]],[30,0,-18,5]],[20,27,[20,0,[2,0.027,-11,[104,0,[74,0,[28,0,-2,9],12],[19,0,-17,25]]],[20,4,[26,0,6,19],-2]],-10],[12,50,[53,0,[26,0,[15,1,-16,[61,0,[33,0,[11,2,[42,0.2446,-4,10],-16],8],[24,0,4,-11]]],11],-5],-9],[23,2.6311,[2,0.027,-8,[98,0,[2,0.215,[89,0,[27,0,[57,83,[56,1,-1,-9],[55,4,-7,16]],6],15],4],17]],-17],[33,0,[1,2.806,[11,2,[17,0,[2,0.02,-17,[68,0,1,-19]],-8],[2,0.105,[11,8,-11,12],-19]],-15],[14,11,9,-41]],[22,0.33,[20,0,[35,0.1037,[52,9,[57,28,-1,9],-5],[97,0,6,-25]],[20,1,[43,0.52,12,-9],1]],[2,0.098,-12,-2]],[104,0,[1,0.77,[56,3,[1,0.04,-2,2],-9],[51,0.925,-8,[53,0,[40,-1,[41,0,[64,1.95,24,-22],-19],-3],-21]]],13],[40,0,[64,1.95,[57,21,-4,[41,0,21,-26]],-22],[3,0.04,-1,[61,0,[3,0.25,[20,-1,-5,3],-25],[0,0.45,8,1]]]],[50,2,[36,0.05483,[27,0,[57,92,[15,25,[0,0.035,-11,[1,0.54,[89,0,-2,19],-8]],1],[6,87,13,-5]],6],2],9],[3,0.017,-11,[38,0,[2,0.215,[124,0,[47,0,[57,75,[59,0,-3,2],9],4],21],[20,-1,[30,0,-4,-35],7]],-3]],[23,2.6752,[90,0,[79,0,[27,0,[33,0,[17,0,[11,2,0,[2,0.176,-4,-24]],-8],[14,9,9,-32]],5],11],-29],-16],[20,27,[20,0,[47,0.596,[9,24,[61,0,-3,[59,0,-2,4]],-6],8],[20,4,[26,0,4,[32,0,21,-8]],-1]],-7],[53,0,[67,0,[51,1.043,[22,0.13,[31,0,[15,4,-6,1],10],-5],[64,0.35,11,1]],[0,0.082,-18,18]],[40,0,-21,-3]],[2,0.215,[79,0,[12,51,[5,0.97041,-1,8],-8],10],[20,-1,[30,0,-4,-33],[41,0,[52,1,[51,0.8122,-10,19],3],0]]],[50,2,[34,0.77,[27,0,[89,0,[2,0.066,[101,0,[112,0,-6,37],19],[55,7,-2,4]],10],6],[110,0,2,-41]],8],[0,0.95,[113,0,[31,0,[23,3.91476,[76,0,[102,0,[53,0,1,-4],-26],[60,1,10,-29]],-18],[15,11,12,-2]],26],-10],[86,0,[88,0,[58,11,[75,0,[1,2.94,[85,0,[53,0,[67,0,1,12],-3],-20],[30,0,-17,4]],-15],-16],-30],11],[87,0,[47,0.068,[2,0.105,[15,8,1,[57,74,-5,7]],[20,-1,[22,-0.17,1,-10],[49,0,[0,0.63,4,-2],-5]]],4],-19],[22,0.283,[31,0,[93,0,[79,0,[104,0,[56,3,[55,9,0,6],[52,4,4,-10]],12],10],17],[15,18,10,-7]],-4],[3,0.017,-9,[113,0,[68,0,[128,0,[90,0,[86,0,[53,0,0,[9,13,[124,0,-3,19],-16]],9],-26],16],-16],22]],[83,0,[50,2,[66,0,[40,0,[64,1.95,[54,2,[48,14,-2,-12],[41,0.0147,13,-23]],-21],0],5],[41,0.092,8,-17]],8],[38,0,[2,0.246,0,[20,-1,[20,-7,5,-17],[52,1,[10,5.003,16,-5],3]]],[117,0,[17,0,[52,0,-11,1],-9],-35]],[9,28,[62,0,[0,0.035,[124,0,[1,0.06,-24,-3],22],[7,0,[13,72,-2,-17],1]],[20,-2,-11,[52,4,10,1]]],-3],[82,0,[2,0.01,-17,[67,0,[0,0.94,[120,0,[2,0.105,[56,0,0,-6],[11,7,2,-7]],7],-9],[0,0.082,-19,14]]],-18],[20,-9,[64,0,[0,0.348,3,-5],[124,0,-11,24]],[20,6,[21,0.05,[76,0,0,-19],[23,0.229,9,2]],[0,0.24,2,-5]]],[98,0,[58,11,[33,0,[1,3.47,[61,0,[42,0.992,[69,0,-3,21],8],[51,1.043,0,5]],-13],[23,0.162,9,-2]],-15],12],[96,0,[85,0,[92,0,[12,147,[94,0,[87,0,[119,0,[47,0.693,[68,0,0,-17],6],8],-16],-22],-12],-22],-18],-23],[22,0.15,[31,0,[1,0.03,[51,0.634,1,[63,0.77,[0,0.87,-2,-14],-24]],[39,5,3,0]],[114,0,9,-27]],[62,0,-4,4]],[123,0,[66,0,[37,0.43,[12,0,3,-2],[0,0.31,[1,0.03,[0,0.09,-26,1],5],-1]],[32,0,6,[13,1,-42,2]]],12],[31,0,[1,3.85,[11,2,0,[1,0.43,-1,-14]],-17],[26,0,[33,0,-10,[20,1,24,[32,1,28,-14]]],[32,0,20,-7]]],[72,0,[31,0,[1,3.47,[91,0,[78,0,[104,0,[52,2,2,-1],[51,0,[19,0,-37,23],24]],10],8],-15],6],6],[127,0,[71,0,[9,26,[112,0,1,32],[46,0.254,-19,[106,0,[37,0.495,[67,0,-6,9],2],24]]],[7,5,-21,1]],-27],[80,0,[99,0,[84,0,[65,0,[22,0.283,[86,0,[20,0,-1,[20,1,7,0]],10],[8,10,-13,-2]],8],-28],-22],-21],[15,0,-8,[58,10,[1,0.03,[15,8,1,[43,0.285,[124,0,[8,12,0,-12],17],-1]],[76,0,[102,0,1,-27],-18]],-13]],[61,3,[112,0,[118,0,[58,1,0,[4,7,4,[55,3,-3,[50,2,[64,0.45,-23,-5],7]]]],7],34],[0,0.324,8,-2]],[2,0.535,[2,0.246,[9,19,[112,0,0,28],[5,0.948964,[10,1.484,-13,[45,9,-2,-15]],[64,0,[23,0,12,-15],12]]],3],-7],[97,0,[121,0,[66,0,[101,0,[2,0.043,[67,0,[89,0,[112,0,[55,3,-3,-13],34],19],22],0],13],4],8],-15],[113,0,[105,0,[51,2.003,[5,0.97703,[88,0,0,-27],[64,0,[23,0,13,[104,0,-4,-39]],13]],[23,0.162,19,-15]],17],18],[104,0,[107,0,[59,0,[12,0,2,-2],[60,0,-6,[85,0,[12,52,3,-6],-35]]],20],[51,0,[19,0,-33,21],22]],[93,0,[81,0,[20,-8,[33,0,[91,0,-4,18],10],[11,2,1,[12,0,[2,0.06,12,[115,0,-2,-48]],-12]]],-21],11],[108,0,[82,0,[70,0,[16,0,[29,0,-7,10],[100,0,[129,0,[0,1.44,[126,0,0,-17],-20],-28],-17]],-12],-14],-33],[104,0,[2,0.707,[77,0,[1,0.694,0,[51,0.93,[34,0.92,-8,1],[7,3,7,-3]]],-11],-9],[51,0,[19,0,-25,19],21]],[20,-10,[56,0,-1,-11],[3,0.017,[1,0.117,7,-11],[109,0,[57,228,[57,84,0,[20,-1,-28,[10,3.904,9,-13]]],-14],-31]]],[44,3,[72,0,[62,0,[78,0,-1,8],[52,4,[20,-1,-16,[99,0,[10,5.3633,9,-5],-30]],[56,4,2,-12]]],5],6],[2,0.01,-14,[94,0,[90,0,[0,0.95,[18,19,[48,23,[67,0,0,10],-6],1],[131,0,-9,[12,21,-19,27]]],-22],-20]],[40,0,[64,1.95,[41,0,[51,0.715,-12,[36,0.03233,11,-19]],[51,0,[7,-1,[30,0,-22,3],0],-26]],-23],[56,4,1,-7]],[111,0,[113,0,[31,0,[118,0,[104,0,[62,0,[0,0.035,[131,0,-4,-24],-1],2],8],6],[3,0.03,-7,8]],16],20],[122,0,[121,0,[33,0,[73,0,0,-17],[20,-1,[20,-5,7,[51,0.885,-32,18]],7]],6],[6,51,16,[131,0,6,-31]]],[11,-1,-16,[95,0,[125,0,[37,0.495,[116,0,[57,98,[56,0,0,[89,0,-5,18]],6],[55,6,-14,9]],1],-24],13]],[68,0,[111,0,[103,0,[1,0.05,[51,0.94,[15,17,[89,0,0,12],-8],[48,5,[130,0,-9,-35],1]],0],10],18],-12]]}';
 }

@@ -2,10 +2,10 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "scipy", "lightgbm", "regex"]
 # ///
-"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz ranker.json [--all]
+"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]
 
-Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees as ranker.json for jab.js, which puts the
-controls in the order of their scores. The shipped file: --all.
+Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
+which puts the controls in the order of their scores. The shipped trees: --all.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
 allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
@@ -32,7 +32,7 @@ import scipy.sparse as sp
 
 ap = argparse.ArgumentParser()
 ap.add_argument("steps")
-ap.add_argument("out")
+ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
 args = ap.parse_args()
 
@@ -88,7 +88,7 @@ COLUMN = {w: j for j, w in enumerate(WORDS)}
 
 
 def describe(step):
-    """One dict of features per control except the focused one (it is already there), in the order ranker.json lists them.
+    """One dict of features per control except the focused one (it is already there), always in the same order: the columns'.
     Every count is computed once per page, so a page of thousands of controls stays cheap."""
     page, focus = step["page"], step["focus"]
     focused = next((c for c in step["controls"] if c["i"] == focus), None)
@@ -236,7 +236,7 @@ def describe(step):
 
 FEATURES = list(
     next(f for s in train for _, f in describe(s))
-)  # ranker.json lists them; after them, a 0/1 column per word
+)  # the columns: these, then a 0/1 column per word
 
 
 def rows(steps_):
@@ -315,7 +315,7 @@ if held:
     report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 
-# The thresholds in ranker.json as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
+# The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
 # other, the shortest decimal that still splits the training values the same way and stays near the middle of the gap between them,
 # where LightGBM put it (0.35, not 0.35000000000000003).
 by_column = X.tocsc()
@@ -341,7 +341,7 @@ def threshold(j, t):
 
 
 def tree(node):
-    """ranker.json: a tree as nested [column, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js only
+    """the model: a tree as nested [column, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js only
     orders the controls by the sum, and two decimals leave that order as it was). A split whose sides round the same is left out."""
     if "leaf_index" in node:
         return round(node["leaf_value"] * 100)
@@ -359,7 +359,7 @@ def columns(t):
 
 
 trees = [tree(info["tree_structure"]) for info in model.dump_model()["tree_info"]]
-# only the columns some tree asks about go in ranker.json, numbered in order: those features, then those words
+# only the columns some tree asks about go in the model, numbered in order: those features, then those words
 used = sorted({j for t in trees for j in columns(t)})
 column = {j: k for k, j in enumerate(used)}
 renumber = lambda t: [column[t[0]], t[1], renumber(t[2]), renumber(t[3])] if isinstance(t, list) else t
@@ -370,5 +370,12 @@ ranker = {
     "words": [WORDS[j - len(FEATURES)] for j in used if j >= len(FEATURES)],
     "trees": [renumber(t) for t in trees],
 }
-pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
-print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written to {args.out}")
+# The model goes into jab.js, as the JSON inside its MODEL string. That string is in single quotes and taken as is, so the JSON
+# must hold no single quote and no backslash.
+model_json = json.dumps(ranker, separators=(",", ":"), ensure_ascii=False)
+assert "'" not in model_json and "\\" not in model_json
+jab = pathlib.Path(args.jab)
+source, found = regex.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_json + "'", jab.read_text(encoding="utf-8"))
+assert found == 1, f"{jab} has no MODEL string"
+jab.write_text(source, encoding="utf-8")
+print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab}")
