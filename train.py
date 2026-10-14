@@ -1,11 +1,12 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["numpy", "scipy", "lightgbm", "regex"]
+# dependencies = ["numpy", "scipy", "lightgbm"]
 # ///
-"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]
+"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
 Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
-which puts the controls in the order of their scores. The shipped trees: --all.
+which puts the controls in the order of their scores. The shipped trees: --all. The features are jab.js's own: its rank() works
+them out under Node, so training sees exactly what the browser computes.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
 allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
@@ -20,16 +21,17 @@ label says nothing about, how many of the 4 stops are wanted, whether the target
 trains on them, for the file you ship."""
 
 import argparse
-import bisect
 import collections
 import gzip
 import json
 import math
 import pathlib
+import re
+import subprocess
+import tempfile
 
 import lightgbm as lgb
 import numpy as np
-import regex
 import scipy.sparse as sp
 
 ap = argparse.ArgumentParser()
@@ -38,193 +40,146 @@ ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
 args = ap.parse_args()
 
+# The labels, and each step's kinds of control and the controls rank() scores (all but the focused one); the controls themselves
+# only jab.js reads, below.
+steps = []
 with gzip.open(args.steps, "rt", encoding="utf-8") as lines:
-    steps = [json.loads(line) for line in lines]
+    for line in lines:
+        s = json.loads(line)
+        controls = s.pop("controls")
+        s["kinds"] = [c["kind"] for c in controls]
+        s["ids"] = [c["i"] for c in controls if c["i"] != s["focus"]]
+        steps.append(s)
 train = [s for s in steps if args.all or s["split"] == "train"]
 held = [s for s in steps if s["split"] == "eval"]
 
-# Words in any script (two letters or more, vowel marks kept), without the commonest little words.
-STOP = set(
-    """the and for with from that this your you our are was were has have had not but all any can will into about its his her
-    their they them there here than then also just been being more most very what when who how which where why per via off
-    el la los las de del en un una uno unos que por con para es se al lo su sus le les des du et au aux est dans qui sur pas
-    der die das und den dem des ein eine einer mit von zu im ist auf für nicht sie es wir ihr
-    של את על עם זה זו כל או גם לא הוא היא אם כי
-    и в во на с со по к ко из от для не что это как""".split()
-)
-words = lambda text: [w for w in regex.findall(r"\p{L}[\p{L}\p{M}]+", text.lower()) if w not in STOP]
-control_words = lambda c: set(words(f"{c['label']} {c['href']} {c['name']} {c['ph']} {c['action']}"))
-context_words = lambda c: set(words(f"{c['before']} {c['parent']} {c['around']}"))
-page_words = lambda p: set(words(f"{p['path']} {p['title']} {p['desc']} {p['h1']} {p['query']}"))
-href_path = lambda c: c["href"].split("#")[0].split("?")[0]  # where a link leads, without its query and fragment
 
-matches = lambda pattern, text: regex.search(pattern, text) is not None
-on_screen = lambda c: c["w"] >= 4 and c["h"] >= 4 and c["y"] + c["h"] >= 0 and c["y"] <= 900 and c["x"] <= 1280
-# controls you type into
-is_field = lambda c: matches(
-    r"^(textarea|input (text|search|email|password|tel|url|number)|textbox|searchbox|combobox)$", c["kind"]
-)
-# reads like the action that finishes what you typed: one of these words, whole (no letter, mark, digit or _ beside it)
-submit_like = lambda c: matches(
-    r"(?<![\p{L}\p{M}\p{N}_])(send|submit|go|search|post|reply|comment|save|continue|next|sign in|log in|login|apply|ask)"
-    r"(?![\p{L}\p{M}\p{N}_])",
-    c["label"].lower(),
-)
-
-
-def vocabulary(items, n):
+def vocabulary(counts, n):
     """the n commonest, ties alphabetically, so the same data always gives the same columns"""
-    counts = collections.Counter(items)
     return {k: i for i, k in enumerate(sorted(counts, key=lambda k: (-counts[k], k))[:n])}
 
 
-KINDS = vocabulary((c["kind"] for s in train for c in s["controls"]), 30)
-# the columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:")
-WORDS = [
-    *(f"w:{w}" for w in vocabulary((w for s in train for c in s["controls"] for w in control_words(c)), 1500)),
-    *(f"c:{w}" for w in vocabulary((w for s in train for c in s["controls"] for w in context_words(c)), 400)),
-    *(f"p:{w}" for w in vocabulary((w for s in train for w in page_words(s["page"])), 300)),
-]
-COLUMN = {w: j for j, w in enumerate(WORDS)}
+KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
 
+# The features are jab.js's own: its rank() runs under Node on every step, in a sandbox that stands in for the page, with a model
+# that writes down instead of scoring. Its one feature name is one no control has, so reading it off a control's features ends in
+# a getter on Object.prototype, which keeps them; its one word, "\0", marks the Map that rank() looks words up in, which keeps
+# every word asked for (the page's, then each control's); and its trees are an object whose reduce(), asked once a control, files
+# the control away. Out come the features (x.f64), the words as numbers (w.i32, and how many each control has: n.i32), and
+# meta.json: the feature names, the words, and per step how many controls, the page's words and the focused control's words.
+RANK_ALL = r"""
+const vm = require("vm"),
+  fs = require("fs"),
+  zlib = require("zlib"),
+  readline = require("readline");
+const [jab, steps, out, kinds] = process.argv.slice(1);
+// jab.js in a sandbox: stand-ins for the page it draws on, and two places that keep what rank() reads
+const stub = new Proxy(function () {}, { get: () => stub, set: () => true, apply: () => stub, construct: () => stub });
+const sandbox = vm.createContext({ document: stub, CSSStyleSheet: stub, addEventListener: stub, setInterval: stub });
+vm.runInContext(
+  `globalThis.asked = [];
+  globalThis.Map = class extends Map {
+    get(k) {
+      if (this.has("\\0")) asked.push(k);
+      return super.get(k);
+    }
+  };
+  Object.defineProperty(Object.prototype, "\\0", { get() { return (globalThis.features = this), 0; } });`,
+  sandbox,
+);
+const src = fs.readFileSync(jab, "utf8").trimEnd();
+if (!src.endsWith("}")) throw new Error(`${jab} is no longer one block`);
+vm.runInContext(`${src.slice(0, -1)}\nglobalThis.rank = rank;\n}`, sandbox); // rank() handed out, at the end of the block
+// a model that writes down instead of scoring
+let rows, words;
+const model = {
+  features: ["\0"],
+  kinds: JSON.parse(kinds),
+  words: ["\0"],
+  trees: { reduce: () => (rows.push(sandbox.features), words.push(sandbox.asked.splice(0)), 0) },
+};
+const describe = (controls, focus, page) => {
+  (rows = []), (words = []), sandbox.asked.splice(0);
+  sandbox.rank(model, controls, focus, page);
+};
+const ids = new Map(),
+  id = (w) => ids.get(w) ?? ids.set(w, ids.size).get(w);
+const own = (r) => words[r].filter((w) => !w.startsWith("p:")).map(id); // the page's words came with the first control's
+const [fx, fw, fn] = ["x.f64", "w.i32", "n.i32"].map((f) => fs.openSync(`${out}/${f}`, "w")),
+  meta = [];
+let names;
+(async () => {
+  const lines = readline.createInterface({
+    input: fs.createReadStream(steps).pipe(zlib.createGunzip()),
+    crlfDelay: Infinity,
+  });
+  for await (const line of lines) {
+    const s = JSON.parse(line);
+    describe(s.controls, s.focus, s.page);
+    names ??= rows.length ? Object.keys(rows[0]) : undefined;
+    const x = new Float64Array(rows.length * (names?.length ?? 0)),
+      w = [],
+      n = [];
+    rows.forEach((f, r) => {
+      let j = 0;
+      for (const k in f) x[r * names.length + j++] = Number(f[k]);
+      const mine = own(r);
+      w.push(...mine), n.push(mine.length);
+    });
+    const step = [rows.length, (words[0] ?? []).filter((w) => w.startsWith("p:")).map(id), []];
+    const focused = s.controls.find((c) => c.i == s.focus);
+    if (focused) describe([focused], -1, s.page), (step[2] = own(0)); // its words count for the vocabulary too
+    fs.writeSync(fx, new Uint8Array(x.buffer));
+    fs.writeSync(fw, new Uint8Array(Int32Array.from(w).buffer));
+    fs.writeSync(fn, new Uint8Array(Int32Array.from(n).buffer));
+    meta.push(step);
+  }
+  fs.writeFileSync(`${out}/meta.json`, JSON.stringify({ names, words: [...ids.keys()], steps: meta }));
+})();
+"""
+with tempfile.TemporaryDirectory() as out:
+    subprocess.run(["node", "-e", RANK_ALL, args.jab, args.steps, out, json.dumps(KINDS)], check=True)
+    meta = json.loads(pathlib.Path(out, "meta.json").read_text(encoding="utf-8"))
+    FEATURES, ALL_WORDS = meta["names"], {w: k for k, w in enumerate(meta["words"])}
+    dense = np.fromfile(f"{out}/x.f64").reshape(-1, len(FEATURES))  # every row: each step's controls, one after another
+    word_ids = np.fromfile(f"{out}/w.i32", dtype=np.int32)
+    word_count = np.fromfile(f"{out}/n.i32", dtype=np.int32)
+first = 0
+for s, (n, page_words, focused_words) in zip(steps, meta["steps"], strict=True):
+    assert n == len(s["ids"]), "jab.js's rank() left out a control"
+    s["first"], s["page_words"], s["focused_words"] = first, np.array(page_words, dtype=np.int64), focused_words
+    first += n
 
-def describe(step):
-    """One dict of features per control except the focused one (it is already there), always in the same order: the columns'.
-    Every count is computed once per page, so a page of thousands of controls stays cheap."""
-    page, focus = step["page"], step["focus"]
-    focused = next((c for c in step["controls"] if c["i"] == focus), None)
-    controls = [c for c in step["controls"] if c["i"] != focus]
-    shown = [c for c in controls if on_screen(c)]
-    shown_y = sorted(c["y"] for c in shown)
-    rank_of = lambda ordered: {c["i"]: r for r, c in enumerate(ordered)}
-    shown_rank = rank_of(shown)
-    inputs_shown = sum(c["kind"].startswith("input") for c in shown)
-    # how much a control stands out by being a coloured, filled shape; 0 = the most colourful control on screen
-    sat_rank = rank_of(sorted(shown, key=lambda c: -(c["sat"] if c["fill"] >= 0.5 else 0)))
-    font_rank = rank_of(sorted(shown, key=lambda c: -c["font"]))  # 0 = the largest type on screen
-    kind_count = collections.Counter(c["kind"] for c in controls)
-    kind_seen = collections.Counter()
-    label_count = collections.Counter(c["label"].strip().lower() for c in controls)
-    href_count = collections.Counter(href_path(c) for c in controls)
-    fields = [c for c in step["controls"] if is_field(c) and c["form"] >= 0]  # the typing fields that sit in a form
-    form_fields = collections.Counter(c["form"] for c in fields)
-    first_field = {}
-    for c in fields:
-        first_field.setdefault(c["form"], c["i"])
-    in_form = lambda c, form: form >= 0 and c["form"] == form
-    focus_form = focused["form"] if focused else -1
-    empty_left = sum(not c["filled"] and in_form(c, focus_form) for c in fields if c["i"] != focus)
-    # how much of what is on screen is covered by something on top
-    known = [c for c in controls if c["hit"] >= 0]
-    occluded_share = sum(c["hit"] == 0 for c in known) / len(known) if known else 0
-    region_size = collections.Counter(c["region"] for c in controls if c["region"] >= 0)
-    for c in controls:
-        segments = [p for p in href_path(c).split("/") if p]
-        in_focus_form = in_form(c, focus_form)
-        yield (
-            c,
-            {
-                # where it is on the page and on screen
-                "x": c["x"] / 1280,
-                "y": c["y"] / 900,
-                "w": c["w"] / 1280,
-                "h": c["h"] / 900,
-                "index": c["i"],
-                "index_frac": c["i"] / max(1, c["n"]),
-                "count": c["n"],
-                "screen_rank": shown_rank.get(c["i"], -1),
-                "on_screen_count": len(shown),
-                "controls_above": bisect.bisect_left(shown_y, c["y"]),
-                "page_scroll": page["scroll"],
-                # what it is
-                "kind": KINDS.get(c["kind"], -1),
-                "same_kind_rank": kind_seen[c["kind"]],
-                "same_kind_count": kind_count[c["kind"]],
-                "inputs_on_screen": inputs_shown,
-                "label_len": len(c["label"]),
-                "label_words": len(words(c["label"])),
-                "no_parent_text": c["parent"] == "",
-                "before_len": len(c["before"]),
-                # where it sits relative to the control you are in
-                "nothing_focused": focus < 0,
-                "index_delta": c["i"] - focus if focused else 0,
-                "focus_dy": (c["y"] - focused["y"]) / 900 if focused else 0,
-                "focus_dist": math.hypot(c["x"] - focused["x"], c["y"] - focused["y"]) / 1000 if focused else 0,
-                "focus_filled": bool(focused and focused["filled"]),
-                "same_region": bool(focused) and c["region"] >= 0 and c["region"] == focused["region"],
-                # its form: the submit button, the first field, how much is still empty
-                "is_submit": c["submit"],
-                "submit_like": submit_like(c),
-                "first_field": is_field(c) and c["form"] >= 0 and first_field[c["form"]] == c["i"],
-                "form_fields": form_fields[c["form"]] if c["form"] >= 0 else 0,
-                "in_focus_form": in_focus_form,
-                "after_focus": in_focus_form and c["i"] > focus,
-                "empty_fields_left": empty_left,
-                "empty_field": is_field(c) and not c["filled"],
-                # how it looks
-                "fill": c["fill"],
-                "sat": c["sat"],
-                "round": c["round"],
-                "bold": c["bold"],
-                "icon": c["icon"],
-                "sat_rank": sat_rank.get(c["i"], -1),
-                # the stack of layers above the page: on top or covered, how much of the view its layer covers and how high it is
-                # stacked, and the size of its region
-                "hit": c["hit"],
-                "occluded_share": occluded_share,
-                "lcover": c["lcover"],
-                "lz": c["lz"],
-                "foreground": occluded_share if c["layer"] >= 0 and c["hit"] == 1 else 0,
-                "region_size": region_size[c["region"]] if c["region"] >= 0 else 0,
-                # content or frame: a headline (heading level, type size next to the running text, which is largest), in the frame
-                "heading": c["head"],
-                "font": c["font"] / page["base"],
-                "font_rank": font_rank.get(c["i"], -1),
-                "in_frame": c["chrome"],
-                # one of many alike (cards, results, rows; which one), in running text, said or linked again
-                "alike": c["like"],
-                "alike_index": c["at"],
-                "prose": c["prose"],
-                "label_repeats": label_count[c["label"].strip().lower()] - 1 if c["label"].strip() else 0,
-                "href_repeats": href_count[href_path(c)] - 1 if href_path(c) else 0,
-                # where it leads: how deep, a slug of words or a number (an article, a product)
-                "href_depth": len(segments),
-                "slug_words": len([w for w in regex.split(r"[-_]+", segments[-1]) if w]) if segments else 0,
-                "href_number": matches(r"[0-9]{3,}", href_path(c)),
-                # how much the page reads
-                "page_prose": page["prose"],
-            },
-        )
-        kind_seen[c["kind"]] += 1
-
-
-FEATURES = list(
-    next(f for s in train for _, f in describe(s))
-)  # the columns: these, then a 0/1 column per word
+# The columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:"), each counted
+# over the training steps, a control's words for every control (the focused one too) and the page's once per step.
+row_of = np.repeat(np.arange(len(word_count)), word_count)
+trained = np.zeros(len(word_count), bool)
+for s in train:
+    trained[s["first"] : s["first"] + len(s["ids"])] = True
+mentions = np.concatenate([word_ids[trained[row_of]], *(np.array(s["focused_words"], dtype=np.int64) for s in train)])
+own = np.bincount(mentions, minlength=len(ALL_WORDS))
+pages = np.bincount(np.concatenate([s["page_words"] for s in train]), minlength=len(ALL_WORDS))
+count = lambda prefix, c: collections.Counter({w: c[k] for w, k in ALL_WORDS.items() if w.startswith(prefix) and c[k]})
+WORDS = [*vocabulary(count("w:", own), 1500), *vocabulary(count("c:", own), 400), *vocabulary(count("p:", pages), 300)]
+column = np.full(len(ALL_WORDS), -1)
+column[[ALL_WORDS[w] for w in WORDS]] = np.arange(len(WORDS))
+# every row's words as 0/1 columns: its own, and its page's
+r = np.concatenate([row_of, *(np.repeat(np.arange(s["first"], s["first"] + len(s["ids"])), len(s["page_words"])) for s in steps)])
+c = np.concatenate([column[word_ids], *(np.tile(column[s["page_words"]], len(s["ids"])) for s in steps)])
+bags = sp.csr_matrix((np.ones(np.sum(c >= 0)), (r[c >= 0], c[c >= 0])), shape=(len(word_count), len(WORDS)))
 
 
 def rows(steps_, every=False):
-    """The rows the model sees, every step's controls one after another: the features, then a 0/1 per word of the control, of the
-    text around it and of the page, as one sparse matrix; and each step's control ids. Training leaves out the controls the label
-    says nothing about; every=True keeps them, as jab.js ranks them all."""
-    dense, cols, ids = [], [], []
+    """The rows the model sees, every step's controls one after another: jab.js's features, then a 0/1 per word of the control, of
+    the text around it and of the page, as one sparse matrix; and each step's control ids. Training leaves out the controls the
+    label says nothing about; every=True keeps them, as jab.js ranks them all."""
+    pick, ids = [], []
     for s in steps_:
-        page = [f"p:{w}" for w in page_words(s["page"])]
-        ids.append([])
         unjudged = set(s.get("unjudged", ()))
-        for c, f in describe(s):
-            if c["i"] in unjudged and not every:
-                continue
-            ids[-1].append(c["i"])
-            dense.append(list(f.values()))
-            mine = page + [f"w:{w}" for w in control_words(c)] + [f"c:{w}" for w in context_words(c)]
-            cols.append(sorted({COLUMN[w] for w in mine if w in COLUMN}))
-    indptr = np.cumsum([0] + [len(c) for c in cols])
-    bags = sp.csr_matrix(
-        (np.ones(indptr[-1]), np.array([j for c in cols for j in c], dtype=np.int64), indptr),
-        shape=(len(cols), len(WORDS)),
-    )
-    return sp.hstack([sp.csr_matrix(np.array(dense, dtype=float).reshape(-1, len(FEATURES))), bags], format="csr"), ids
+        mine = [(s["first"] + k, i) for k, i in enumerate(s["ids"]) if every or i not in unjudged]
+        pick += [k for k, _ in mine]
+        ids.append([i for _, i in mine])
+    return sp.hstack([sp.csr_matrix(dense[pick]), bags[pick]], format="csr"), ids
 
 
 def relevance(s, ids):
@@ -362,7 +317,7 @@ if held:
 model_json = json.dumps(ranker, separators=(",", ":"), ensure_ascii=False)
 assert "'" not in model_json and "\\" not in model_json
 jab = pathlib.Path(args.jab)
-source, found = regex.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_json + "'", jab.read_text(encoding="utf-8"))
+source, found = re.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_json + "'", jab.read_text(encoding="utf-8"))
 assert found == 1, f"{jab} has no MODEL string"
 jab.write_text(source, encoding="utf-8")
 print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab}")
