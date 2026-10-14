@@ -23,9 +23,11 @@ trains on them, for the file you ship."""
 import argparse
 import collections
 import gzip
+import hashlib
 import json
 import math
 import pathlib
+import pickle
 import re
 import subprocess
 import tempfile
@@ -40,67 +42,54 @@ ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
 args = ap.parse_args()
 
-# The labels, and each step's kinds of control and the controls rank() scores (all but the focused one); the controls themselves
-# only jab.js reads, below.
-steps = []
-with gzip.open(args.steps, "rt", encoding="utf-8") as lines:
-    for line in lines:
-        s = json.loads(line)
-        controls = s.pop("controls")
-        s["kinds"] = [c["kind"] for c in controls]
-        s["ids"] = [c["i"] for c in controls if c["i"] != s["focus"]]
-        steps.append(s)
-train = [s for s in steps if args.all or s["split"] == "train"]
-held = [s for s in steps if s["split"] == "eval"]
-
 
 def vocabulary(counts, n):
     """the n commonest, ties alphabetically, so the same data always gives the same columns"""
     return {k: i for i, k in enumerate(sorted(counts, key=lambda k: (-counts[k], k))[:n])}
 
 
-KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
-
-# The features are jab.js's own: its rank() runs under Node on every step, in a sandbox that stands in for the page, with a model
-# that writes down instead of scoring. Its one feature name is one no control has, so reading it off a control's features ends in
-# a getter on Object.prototype, which keeps them; its one word, "\0", marks the Map that rank() looks words up in, which keeps
-# every word asked for (the page's, then each control's); and its trees are an object whose reduce(), asked once a control, files
-# the control away. Out come the features (x.f64), the words as numbers (w.i32, and how many each control has: n.i32), and
-# meta.json: the feature names, the words, and per step how many controls, the page's words and the focused control's words.
+# The features are jab.js's own: Node runs jab.js as a function of what it takes from the page (stand-ins for that) and has its
+# rank() go over every step with a model that writes down instead of scoring. Its one feature name is one no control has, so
+# reading it off a control's features ends in a getter on Object.prototype, which keeps them; its one word, "\0", marks the Map
+# that rank() looks words up in, and the Map jab.js is handed keeps every word asked of that one (the page's, then each
+# control's); its trees are an object whose reduce(), asked once a control, files the control away. Out come the features
+# (x.f64), the words as numbers (w.i32, and how many each control has: n.i32), and meta.json: the feature names, the words, and
+# per step how many controls, the page's words and the focused control's words.
 RANK_ALL = r"""
-const vm = require("vm"),
-  fs = require("fs"),
+const fs = require("fs"),
   zlib = require("zlib"),
   readline = require("readline");
 const [jab, steps, out, kinds] = process.argv.slice(1);
-// jab.js in a sandbox: stand-ins for the page it draws on, and two places that keep what rank() reads
+// jab.js as a function of what it takes from the page: stand-ins for that, and a Map that keeps the words rank() looks up
 const stub = new Proxy(function () {}, { get: () => stub, set: () => true, apply: () => stub, construct: () => stub });
-const sandbox = vm.createContext({ document: stub, CSSStyleSheet: stub, addEventListener: stub, setInterval: stub });
-vm.runInContext(
-  `globalThis.asked = [];
-  globalThis.Map = class extends Map {
-    get(k) {
-      if (this.has("\\0")) asked.push(k);
-      return super.get(k);
-    }
-  };
-  Object.defineProperty(Object.prototype, "\\0", { get() { return (globalThis.features = this), 0; } });`,
-  sandbox,
-);
+const asked = [];
+class Recording extends Map {
+  get(k) {
+    if (this.has("\0")) asked.push(k);
+    return super.get(k);
+  }
+}
+let features;
+Object.defineProperty(Object.prototype, "\0", {
+  get() {
+    return (features = this), 0;
+  },
+});
 const src = fs.readFileSync(jab, "utf8").trimEnd();
 if (!src.endsWith("}")) throw new Error(`${jab} is no longer one block`);
-vm.runInContext(`${src.slice(0, -1)}\nglobalThis.rank = rank;\n}`, sandbox); // rank() handed out, at the end of the block
+const params = ["document", "CSSStyleSheet", "addEventListener", "setInterval", "Map"];
+const rank = new Function(...params, `${src.slice(0, -1)}\nreturn rank;\n}`)(stub, stub, stub, stub, Recording);
 // a model that writes down instead of scoring
 let rows, words;
 const model = {
   features: ["\0"],
   kinds: JSON.parse(kinds),
   words: ["\0"],
-  trees: { reduce: () => (rows.push(sandbox.features), words.push(sandbox.asked.splice(0)), 0) },
+  trees: { reduce: () => (rows.push(features), words.push(asked.splice(0)), 0) },
 };
 const describe = (controls, focus, page) => {
-  (rows = []), (words = []), sandbox.asked.splice(0);
-  sandbox.rank(model, controls, focus, page);
+  (rows = []), (words = []), asked.splice(0);
+  rank(model, controls, focus, page);
 };
 const ids = new Map(),
   id = (w) => ids.get(w) ?? ids.set(w, ids.size).get(w);
@@ -137,49 +126,102 @@ let names;
   fs.writeFileSync(`${out}/meta.json`, JSON.stringify({ names, words: [...ids.keys()], steps: meta }));
 })();
 """
-with tempfile.TemporaryDirectory() as out:
-    subprocess.run(["node", "-e", RANK_ALL, args.jab, args.steps, out, json.dumps(KINDS)], check=True)
-    meta = json.loads(pathlib.Path(out, "meta.json").read_text(encoding="utf-8"))
-    FEATURES, ALL_WORDS = meta["names"], {w: k for k, w in enumerate(meta["words"])}
-    dense = np.fromfile(f"{out}/x.f64").reshape(-1, len(FEATURES))  # every row: each step's controls, one after another
-    word_ids = np.fromfile(f"{out}/w.i32", dtype=np.int32)
-    word_count = np.fromfile(f"{out}/n.i32", dtype=np.int32)
-first = 0
-for s, (n, page_words, focused_words) in zip(steps, meta["steps"], strict=True):
-    assert n == len(s["ids"]), "jab.js's rank() left out a control"
-    s["first"], s["page_words"], s["focused_words"] = first, np.array(page_words, dtype=np.int64), focused_words
-    first += n
-
-# The columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:"), each counted
-# over the training steps, a control's words for every control (the focused one too) and the page's once per step.
-row_of = np.repeat(np.arange(len(word_count)), word_count)
-trained = np.zeros(len(word_count), bool)
-for s in train:
-    trained[s["first"] : s["first"] + len(s["ids"])] = True
-mentions = np.concatenate([word_ids[trained[row_of]], *(np.array(s["focused_words"], dtype=np.int64) for s in train)])
-own = np.bincount(mentions, minlength=len(ALL_WORDS))
-pages = np.bincount(np.concatenate([s["page_words"] for s in train]), minlength=len(ALL_WORDS))
-count = lambda prefix, c: collections.Counter({w: c[k] for w, k in ALL_WORDS.items() if w.startswith(prefix) and c[k]})
-WORDS = [*vocabulary(count("w:", own), 1500), *vocabulary(count("c:", own), 400), *vocabulary(count("p:", pages), 300)]
-column = np.full(len(ALL_WORDS), -1)
-column[[ALL_WORDS[w] for w in WORDS]] = np.arange(len(WORDS))
-# every row's words as 0/1 columns: its own, and its page's
-r = np.concatenate([row_of, *(np.repeat(np.arange(s["first"], s["first"] + len(s["ids"])), len(s["page_words"])) for s in steps)])
-c = np.concatenate([column[word_ids], *(np.tile(column[s["page_words"]], len(s["ids"])) for s in steps)])
-bags = sp.csr_matrix((np.ones(np.sum(c >= 0)), (r[c >= 0], c[c >= 0])), shape=(len(word_count), len(WORDS)))
 
 
-def rows(steps_, every=False):
-    """The rows the model sees, every step's controls one after another: jab.js's features, then a 0/1 per word of the control, of
-    the text around it and of the page, as one sparse matrix; and each step's control ids. Training leaves out the controls the
-    label says nothing about; every=True keeps them, as jab.js ranks them all."""
-    pick, ids = [], []
-    for s in steps_:
-        unjudged = set(s.get("unjudged", ()))
-        mine = [(s["first"] + k, i) for k, i in enumerate(s["ids"]) if every or i not in unjudged]
-        pick += [k for k, _ in mine]
-        ids.append([i for _, i in mine])
-    return sp.hstack([sp.csr_matrix(dense[pick]), bags[pick]], format="csr"), ids
+def load():
+    """What training takes from the steps and from jab.js, the slow part: the feature names, the kinds and words that make
+    columns, the labelled steps for training and held out, and their rows (for the held-out steps, every control)."""
+    # The labels, and each step's kinds of control and the controls rank() scores (all but the focused one); the controls
+    # themselves only jab.js reads.
+    steps = []
+    with gzip.open(args.steps, "rt", encoding="utf-8") as lines:
+        for line in lines:
+            s = json.loads(line)
+            controls = s.pop("controls")
+            s["kinds"] = [c["kind"] for c in controls]
+            s["ids"] = [c["i"] for c in controls if c["i"] != s["focus"]]
+            steps.append(s)
+    train = [s for s in steps if args.all or s["split"] == "train"]
+    held = [s for s in steps if s["split"] == "eval"]
+    kinds = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
+    with tempfile.TemporaryDirectory() as out:
+        subprocess.run(["node", "-e", RANK_ALL, args.jab, args.steps, out, json.dumps(kinds)], check=True)
+        meta = json.loads(pathlib.Path(out, "meta.json").read_text(encoding="utf-8"))
+        names, word_id = meta["names"], {w: k for k, w in enumerate(meta["words"])}
+        dense = np.fromfile(f"{out}/x.f64").reshape(-1, len(names))  # every row: each step's controls, one after another
+        word_ids = np.fromfile(f"{out}/w.i32", dtype=np.int32)
+        word_count = np.fromfile(f"{out}/n.i32", dtype=np.int32)
+    first = 0
+    for s, (n, page_words, focused_words) in zip(steps, meta["steps"], strict=True):
+        assert n == len(s["ids"]), "jab.js's rank() left out a control"
+        s["first"], s["page_words"], s["focused_words"] = first, np.array(page_words, dtype=np.int64), focused_words
+        first += n
+
+    # The columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:"), each counted
+    # over the training steps, a control's words for every control (the focused one too) and the page's once per step.
+    row_of = np.repeat(np.arange(len(word_count)), word_count)
+    trained = np.zeros(len(word_count), bool)
+    for s in train:
+        trained[s["first"] : s["first"] + len(s["ids"])] = True
+    mentions = np.concatenate([word_ids[trained[row_of]], *(np.array(s["focused_words"], dtype=np.int64) for s in train)])
+    own = np.bincount(mentions, minlength=len(word_id))
+    pages = np.bincount(np.concatenate([s["page_words"] for s in train]), minlength=len(word_id))
+    count = lambda prefix, c: collections.Counter({w: c[k] for w, k in word_id.items() if w.startswith(prefix) and c[k]})
+    words = [*vocabulary(count("w:", own), 1500), *vocabulary(count("c:", own), 400), *vocabulary(count("p:", pages), 300)]
+    column = np.full(len(word_id), -1)
+    column[[word_id[w] for w in words]] = np.arange(len(words))
+    # every row's words as 0/1 columns: its own, and its page's
+    r = np.concatenate(
+        [row_of, *(np.repeat(np.arange(s["first"], s["first"] + len(s["ids"])), len(s["page_words"])) for s in steps)]
+    )
+    c = np.concatenate([column[word_ids], *(np.tile(column[s["page_words"]], len(s["ids"])) for s in steps)])
+    bags = sp.csr_matrix((np.ones(np.sum(c >= 0)), (r[c >= 0], c[c >= 0])), shape=(len(word_count), len(words)))
+
+    def picked(steps_, every):
+        """each step's controls: their rows, one step after another, and their ids. Training leaves out the controls the label
+        says nothing about; every=True keeps them, as jab.js ranks them all."""
+        pick, ids = [], []
+        for s in steps_:
+            unjudged = set(s.get("unjudged", ()))
+            mine = [(s["first"] + k, i) for k, i in enumerate(s["ids"]) if every or i not in unjudged]
+            pick += [k for k, _ in mine]
+            ids.append([i for _, i in mine])
+        return pick, ids
+
+    def rows(steps_, every=False):
+        """The rows the model sees: jab.js's features, then a 0/1 per word of the control, of the text around it and of the page,
+        as one sparse matrix; and each step's control ids."""
+        pick, ids = picked(steps_, every)
+        return sp.hstack([sp.csr_matrix(dense[pick]), bags[pick]], format="csr"), ids
+
+    # each feature's values over the training rows, for the export below (a word's are 0 and 1)
+    train_rows = np.array(picked(train, False)[0])
+    values = [np.unique(dense[train_rows, j]) for j in range(len(names))]
+    data = names, kinds, words, train, held, rows(train), rows(held, every=True), values
+    for s in steps:  # what is kept of a step: its labels
+        for k in ("kinds", "ids", "first", "page_words", "focused_words", "page"):
+            del s[k]
+    return data
+
+
+# load() depends only on the steps, on jab.js but for its trees, and on this file down to here: a cache next to the steps keeps
+# what it returns (about 800 MB, one for --all and one without), and the next run with all three the same starts from there.
+here = pathlib.Path(__file__).read_text(encoding="utf-8")
+code = here[: here.index("\n# load() depends only")]
+jab_code = re.sub(r"const MODEL =\s*'[^']*'", "", pathlib.Path(args.jab).read_text(encoding="utf-8"))
+parts = [pathlib.Path(args.steps).read_bytes(), jab_code.encode(), code.encode(), bytes([args.all])]
+key = hashlib.sha256(b"\0".join(parts)).hexdigest()[:16]
+mode = "all" if args.all else "train"
+cache = pathlib.Path(f"{args.steps}.{mode}.{key}.cache")
+if cache.exists():
+    with cache.open("rb") as f:
+        data = pickle.load(f)
+else:
+    data = load()
+    for old in cache.parent.glob(f"{pathlib.Path(args.steps).name}.{mode}.*.cache"):
+        old.unlink()
+    cache.write_bytes(pickle.dumps(data, protocol=5))
+FEATURES, KINDS, WORDS, train, held, (X, ids), (Xh, idsh), VALUES = data
 
 
 def relevance(s, ids):
@@ -189,7 +231,6 @@ def relevance(s, ids):
     return [3 if i == s["target"] else 2 if i in ahead else 1 if i in s["ok"] else 0 for i in ids]
 
 
-X, ids = rows(train)
 y = np.concatenate([relevance(s, i) for s, i in zip(train, ids)])
 params = {
     "objective": "lambdarank",
@@ -213,15 +254,8 @@ model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
 # other, the shortest decimal that still splits the training values the same way and stays near the middle of the gap between them,
 # where LightGBM put it (0.35, not 0.35000000000000003).
-by_column = X.tocsc()
-seen = {}
-
-
 def threshold(j, t):
-    if j not in seen:
-        v = by_column.data[by_column.indptr[j] : by_column.indptr[j + 1]]
-        seen[j] = np.unique(np.append(v, 0.0) if len(v) < X.shape[0] else v)
-    v = seen[j]
+    v = VALUES[j] if j < len(FEATURES) else np.array([0.0, 1.0])
     if np.all(v == np.floor(v)):
         return math.floor(t)
     k = np.searchsorted(v, t, side="right")  # v[k - 1] <= t < v[k]
@@ -269,9 +303,9 @@ ranker = {
 def predict(M):
     """jab.js's score for every row of M: the sum of the trees as written into it, a value at or below a threshold going left. In
     blocks of rows, to keep the dense copy small."""
-    out = np.zeros(M.shape[0])
+    M, out = M[:, used].tocsr(), np.zeros(M.shape[0])
     for start in range(0, M.shape[0], 50000):
-        D, part = M[start : start + 50000, used].toarray(), out[start : start + 50000]
+        D, part = M[start : start + 50000].toarray(), out[start : start + 50000]
 
         def walk(node, at):
             if not isinstance(node, list):
@@ -286,12 +320,11 @@ def predict(M):
     return out
 
 
-def report(name, steps_):
+def report(name, steps_, M, ids):
     """Over all steps and per kind of page, for the trees as written into jab.js, ranking every control as jab.js does: is the first
     stop wanted (what training rewards: the target, a pick still ahead of it, an also-fine one; not a pick already visited), is it
     a control the label says nothing about, how many of the 4 stops are wanted, is the target first, is it within the 4."""
-    X, ids = rows(steps_, every=True)
-    scores = predict(X)
+    scores = predict(M)
     tally = collections.defaultdict(lambda: np.zeros(6))
     start = 0
     for s, i in zip(steps_, ids):
@@ -310,7 +343,7 @@ def report(name, steps_):
 
 
 if held:
-    report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
+    report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held, Xh, idsh)
 
 # The model goes into jab.js, as the JSON inside its MODEL string. That string is in single quotes and taken as is, so the JSON
 # must hold no single quote and no backslash.
