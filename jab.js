@@ -235,6 +235,27 @@
     addEventListener(type, end, true);
   // a text field fires "change" when focus leaves it, which is jab moving on: only a select, checkbox or radio changing counts
   addEventListener("change", (e) => !e.target.matches?.(TYPED) && end(), true);
+  // Quiet focus: the page does not hear about the focus jab gives (no focus or focusin event reaches it), so a field that opens
+  // suggestions, a date picker or a search overlay when it gets the focus stays closed while you look through the stops. Once you
+  // use the control (a key other than Tab or Escape, a click in it, a paste), the page gets those events, as if you had just arrived.
+  let landing = false, // jab is moving the focus right now
+    quiet = null; // the control jab focused, while the page has not heard of it
+  for (const type of ["focus", "focusin"])
+    addEventListener(
+      type,
+      (e) => (landing ? e.stopImmediatePropagation() : e.composedPath()[0] == quiet && (quiet = null)),
+      true,
+    );
+  const wake = () => {
+    const el = quiet;
+    quiet = null;
+    if (el && active() == el) {
+      el.dispatchEvent(new FocusEvent("focus"));
+      el.dispatchEvent(new FocusEvent("focusin", { bubbles: true, composed: true }));
+    }
+  };
+  addEventListener("pointerdown", (e) => quiet && e.composedPath().includes(quiet) && wake(), true);
+  addEventListener("beforeinput", wake, true);
   // Ctrl+Q types nothing and Chrome does not use it; any other key (Enter, Escape, arrows, Tab, ...) ends the session
   // While Ctrl+Q is held down, a digit 1-4 goes straight to that stop; any other time Ctrl+digit is left to Chrome.
   // Inside a session, Ctrl+Q moves to the next stop only on a tap (let go within 0.4 s, no digit): holding it is for choosing.
@@ -249,8 +270,10 @@
     while (ses?.els.length) {
       i %= ses.els.length;
       const el = ses.els[i];
+      landing = true;
       el.focus();
-      if (active() == el) return touch(), show();
+      landing = false;
+      if (active() == el) return (quiet = el), touch(), show();
       if (ses.rest.length) ses.els[i] = ses.rest.shift();
       else {
         ses.els.splice(i, 1);
@@ -279,7 +302,11 @@
   addEventListener("blur", () => (held = tapped = 0));
   addEventListener(
     "keydown",
-    (e) => !isPress(e) && !digit(e) && !["Control", "Shift", "Alt", "Meta"].includes(e.key) && end(),
+    (e) => {
+      if (isPress(e) || digit(e) || ["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+      if (e.key != "Tab" && e.key != "Escape") wake(); // using the control, not leaving it
+      end();
+    },
     true,
   );
 

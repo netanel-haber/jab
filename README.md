@@ -18,6 +18,8 @@ The ranker is lean: Just 9KB, LightGBM (2016) trees running in-browser CPU-only 
 
 Anything else you do (typing, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>Q</kbd> will be a new session.
 
+jab moves the focus quietly: a search box that opens suggestions, or a field that opens a date picker, stays closed while you look through the stops, and opens as soon as you type in it.
+
 Open source (MIT): [github.com/netanel-haber/jab](https://github.com/netanel-haber/jab)
 
 <details><summary>MIT License</summary>
