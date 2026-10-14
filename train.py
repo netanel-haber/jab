@@ -9,7 +9,7 @@ controls in the order of their scores. The shipped file: --all.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
 allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
-pop-ups; six languages), labelled by rule; all collected by jab.js's own collector. One labelled step per line:
+pop-ups; six languages), labelled by rule and counted at half weight; all collected by jab.js's own collector. One step per line:
 {"split": "train"|"eval", "type": the kind of page ("real" or "live" for a real site), "page": {"path", "title", "desc", "scroll",
 "h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
 next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
@@ -273,8 +273,8 @@ X, ids = rows(train)
 y = np.concatenate([relevance(s, i) for s, i in zip(train, ids)])
 params = {
     "objective": "lambdarank",
-    "learning_rate": 0.15,
-    "num_leaves": 21,
+    "learning_rate": 0.2,
+    "num_leaves": 10,
     "min_data_in_leaf": 10,
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
@@ -284,7 +284,10 @@ params = {
     "force_row_wise": True,
     "verbose": -1,
 }
-model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids]), num_boost_round=100)
+# The generated pages count half: they teach what few real sites show (forms, pop-ups, where the content is), and a model this
+# small has to spend most of itself on the real sites, which are what jab is for.
+weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(train, ids)])
+model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=weight), num_boost_round=70)
 
 
 def report(name, steps_):
@@ -312,8 +315,9 @@ if held:
     report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 
-# The thresholds in ranker.json as short as they can be: the shortest decimal that still splits the training values the same way and
-# stays near the middle of the gap between them, where LightGBM put it (22.5, not 22.500000000000004).
+# The thresholds in ranker.json as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
+# other, the shortest decimal that still splits the training values the same way and stays near the middle of the gap between them,
+# where LightGBM put it (0.35, not 0.35000000000000003).
 by_column = X.tocsc()
 seen = {}
 
@@ -323,6 +327,8 @@ def threshold(j, t):
         v = by_column.data[by_column.indptr[j] : by_column.indptr[j + 1]]
         seen[j] = np.unique(np.append(v, 0.0) if len(v) < X.shape[0] else v)
     v = seen[j]
+    if np.all(v == np.floor(v)):
+        return math.floor(t)
     k = np.searchsorted(v, t, side="right")  # v[k - 1] <= t < v[k]
     low, high = v[k - 1] if k else -math.inf, v[k] if k < len(v) else math.inf
     for digits in range(18):
@@ -334,36 +340,35 @@ def threshold(j, t):
     return t
 
 
-def splits(node):
-    """the features a tree splits on"""
-    if "leaf_index" not in node:
-        yield node["split_feature"]
-        yield from splits(node["left_child"])
-        yield from splits(node["right_child"])
-
-
-roots = [info["tree_structure"] for info in model.dump_model()["tree_info"]]
-# only the words some tree asks about go in ranker.json, numbered after the features
-used = sorted({f for root in roots for f in splits(root) if f >= len(FEATURES)})
-column = {f: len(FEATURES) + j for j, f in enumerate(used)}
-
-
 def tree(node):
-    """ranker.json: a tree as nested [feature, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js
-    only orders the controls by the sum, and two decimals leave that order as it was)"""
+    """ranker.json: a tree as nested [column, threshold, left, right]; a leaf as a whole number, its value times 100 (jab.js only
+    orders the controls by the sum, and two decimals leave that order as it was). A split whose sides round the same is left out."""
     if "leaf_index" in node:
         return round(node["leaf_value"] * 100)
+    left, right = tree(node["left_child"]), tree(node["right_child"])
     f = node["split_feature"]
-    return [column.get(f, f), threshold(f, node["threshold"]), tree(node["left_child"]), tree(node["right_child"])]
+    return left if left == right else [f, threshold(f, node["threshold"]), left, right]
 
 
-trees = [tree(root) for root in roots]
+def columns(t):
+    """the columns a tree splits on"""
+    if isinstance(t, list):
+        yield t[0]
+        yield from columns(t[2])
+        yield from columns(t[3])
+
+
+trees = [tree(info["tree_structure"]) for info in model.dump_model()["tree_info"]]
+# only the columns some tree asks about go in ranker.json, numbered in order: those features, then those words
+used = sorted({j for t in trees for j in columns(t)})
+column = {j: k for k, j in enumerate(used)}
+renumber = lambda t: [column[t[0]], t[1], renumber(t[2]), renumber(t[3])] if isinstance(t, list) else t
 ranker = {
-    "features": FEATURES,
+    "features": [FEATURES[j] for j in used if j < len(FEATURES)],
     "kinds": KINDS,
     "boxes": BOXES,
-    "words": [WORDS[f - len(FEATURES)] for f in used],
-    "trees": trees,
+    "words": [WORDS[j - len(FEATURES)] for j in used if j >= len(FEATURES)],
+    "trees": [renumber(t) for t in trees],
 }
-pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":")))
-print(f"{len(trees)} trees and {len(used)} words written to {args.out}")
+pathlib.Path(args.out).write_text(json.dumps(ranker, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written to {args.out}")
