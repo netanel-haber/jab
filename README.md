@@ -1,6 +1,6 @@
 <img src="icon.png" alt="jab" height="64">
 
-Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control/field that the ranker assumes you want, based on the current page, focused elements, etc.
+Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control/field that the ranker assumes you want, based on the current page, focused elements, etc. <kbd>Enter</kbd> uses it.
 
 **[Add to Chrome](https://chromewebstore.google.com/detail/jab/dfnikmnfgjnbmhfnpeigignlgpkggbji)**
 
@@ -8,17 +8,16 @@ Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control/field that the rank
 
 > We have `tab` at home.
 
-<img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q jumps to the top story, again to the next one, and holding Ctrl+Q while pressing 4 goes to the fourth.">
+<img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q highlights the top story, and Enter opens it.">
 
 The ranker is lean: Just 9KB, LightGBM (2016) trees running in-browser CPU-only in about 2ms. No network requests, nothing leaves the browser ([privacy](PRIVACY.md)).
 
-- The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will focus the control, as well as highlight 3 other picks with small numbered badges.
-- Tap <kbd>Ctrl</kbd>+<kbd>Q</kbd> again: the next of the four.
+- The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control (its badge reads 1 ↵), as well as 3 other picks with small numbered badges. Nothing is focused yet, so nothing pops open.
+- <kbd>Enter</kbd>: uses the highlighted control. A button is pressed, a link followed, a field focused (a date picker opens). Or just type: a highlighted text field gets the focus and what you type.
+- Tap <kbd>Ctrl</kbd>+<kbd>Q</kbd> again: the focus moves to the next of the four.
 - Hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press <kbd>1</kbd> to <kbd>4</kbd>: Straight to that one.
 
-Anything else you do (typing, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>Q</kbd> will be a new session.
-
-jab moves the focus quietly: a search box that opens suggestions, or a field that opens a date picker, stays closed while you look through the stops, and opens as soon as you type in it.
+Anything else you do (<kbd>Esc</kbd>, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>Q</kbd> will be a new session.
 
 Open source (MIT): [github.com/netanel-haber/jab](https://github.com/netanel-haber/jab)
 
