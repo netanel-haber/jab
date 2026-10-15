@@ -5,8 +5,8 @@
 """jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
 Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
-which puts the controls in the order of their scores. The shipped trees: --all. The features are jab.js's own: its rank() works
-them out under Node, so training sees exactly what the browser computes.
+which puts the controls in the order of their scores. The shipped trees: --all. The features are jab.js's own: its describe()
+works them out under Node, so training sees exactly what the browser computes.
 steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
 allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
@@ -61,52 +61,22 @@ def vocabulary(counts, n):
 
 KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
 
-# The features are jab.js's own: Node runs jab.js as a function of what it takes from the page (stand-ins for that) and has its
-# rank() go over every step with a model that writes down instead of scoring. Its one feature name is one no control has, so
-# reading it off a control's features ends in a getter on Object.prototype, which keeps them; its one word, "\0", marks the Map
-# that rank() looks words up in, and the Map jab.js is handed keeps every word asked of that one (the page's, then each
-# control's); its trees are an object whose reduce(), asked once a control, files the control away. Out come the features
-# (x.f64), the words as numbers (w.i32, and how many each control has: n.i32), and meta.json: the feature names, the words, and
-# per step how many controls, the page's words and the focused control's words.
-RANK_ALL = r"""
+# The features are jab.js's own: Node loads jab.js, with stand-ins for the page it sets itself up on as it loads, and its describe()
+# gives every step's words and each control's features and words, as rank() sees them. Out come the features (x.f64), the words as
+# numbers (w.i32, and how many each control has: n.i32), and meta.json: the feature names, the words, and per step how many
+# controls, the page's words and the focused control's words.
+DESCRIBE_ALL = r"""
 const fs = require("fs"),
+  path = require("path"),
   zlib = require("zlib"),
   readline = require("readline");
 const [jab, steps, out, kinds] = process.argv.slice(1);
-// jab.js as a function of what it takes from the page: stand-ins for that, and a Map that keeps the words rank() looks up
 const stub = new Proxy(function () {}, { get: () => stub, set: () => true, apply: () => stub, construct: () => stub });
-const asked = [];
-class Recording extends Map {
-  get(k) {
-    if (this.has("\0")) asked.push(k);
-    return super.get(k);
-  }
-}
-let features;
-Object.defineProperty(Object.prototype, "\0", {
-  get() {
-    return (features = this), 0;
-  },
-});
-const src = fs.readFileSync(jab, "utf8").trimEnd();
-if (!src.endsWith("}")) throw new Error(`${jab} is no longer one block`);
-const params = ["document", "CSSStyleSheet", "addEventListener", "setInterval", "Map"];
-const rank = new Function(...params, `${src.slice(0, -1)}\nreturn rank;\n}`)(stub, stub, stub, stub, Recording);
-// a model that writes down instead of scoring
-let rows, words;
-const model = {
-  features: ["\0"],
-  kinds: JSON.parse(kinds),
-  words: ["\0"],
-  trees: { reduce: () => (rows.push(features), words.push(asked.splice(0)), 0) },
-};
-const describe = (controls, focus, page) => {
-  (rows = []), (words = []), asked.splice(0);
-  rank(model, controls, focus, page);
-};
+Object.assign(globalThis, { document: stub, CSSStyleSheet: stub, addEventListener: stub, setInterval: stub });
+const { describe } = require(path.resolve(jab));
+const kindOf = JSON.parse(kinds);
 const ids = new Map(),
   id = (w) => ids.get(w) ?? ids.set(w, ids.size).get(w);
-const own = (r) => words[r].filter((w) => !w.startsWith("p:")).map(id); // the page's words came with the first control's
 const [fx, fw, fn] = ["x.f64", "w.i32", "n.i32"].map((f) => fs.openSync(`${out}/${f}`, "w")),
   meta = [];
 let names;
@@ -117,20 +87,20 @@ let names;
   });
   for await (const line of lines) {
     const s = JSON.parse(line);
-    describe(s.controls, s.focus, s.page);
-    names ??= rows.length ? Object.keys(rows[0]) : undefined;
-    const x = new Float64Array(rows.length * (names?.length ?? 0)),
+    const { page, controls } = describe(kindOf, s.controls, s.focus, s.page);
+    names ??= controls.length ? Object.keys(controls[0].features) : undefined;
+    const x = new Float64Array(controls.length * (names?.length ?? 0)),
       w = [],
       n = [];
-    rows.forEach((f, r) => {
+    controls.forEach(({ features, words }, r) => {
       let j = 0;
-      for (const k in f) x[r * names.length + j++] = Number(f[k]);
-      const mine = own(r);
-      w.push(...mine), n.push(mine.length);
+      for (const k in features) x[r * names.length + j++] = Number(features[k]);
+      w.push(...words.map(id)), n.push(words.length);
     });
-    const step = [rows.length, (words[0] ?? []).filter((w) => w.startsWith("p:")).map(id), []];
+    const step = [controls.length, page.map(id)];
+    // the focused control's words count for the vocabulary too
     const focused = s.controls.find((c) => c.i == s.focus);
-    if (focused) describe([focused], -1, s.page), (step[2] = own(0)); // its words count for the vocabulary too
+    step.push(focused ? describe(kindOf, [focused], -1, s.page).controls[0].words.map(id) : []);
     fs.writeSync(fx, new Uint8Array(x.buffer));
     fs.writeSync(fw, new Uint8Array(Int32Array.from(w).buffer));
     fs.writeSync(fn, new Uint8Array(Int32Array.from(n).buffer));
@@ -140,7 +110,7 @@ let names;
 })();
 """
 with tempfile.TemporaryDirectory() as out:
-    subprocess.run(["node", "-e", RANK_ALL, args.jab, args.steps, out, json.dumps(KINDS)], check=True)
+    subprocess.run(["node", "-e", DESCRIBE_ALL, args.jab, args.steps, out, json.dumps(KINDS)], check=True)
     meta = json.loads(pathlib.Path(out, "meta.json").read_text(encoding="utf-8"))
     FEATURES, ALL_WORDS = meta["names"], {w: k for k, w in enumerate(meta["words"])}
     dense = np.fromfile(f"{out}/x.f64").reshape(-1, len(FEATURES))  # every row: each step's controls, one after another
@@ -148,7 +118,7 @@ with tempfile.TemporaryDirectory() as out:
     word_count = np.fromfile(f"{out}/n.i32", dtype=np.int32)
 first = 0
 for s, (n, page_words, focused_words) in zip(steps, meta["steps"], strict=True):
-    assert n == len(s["ids"]), "jab.js's rank() left out a control"
+    assert n == len(s["ids"]), "jab.js's describe() left out a control"
     s["first"], s["page_words"], s["focused_words"] = first, np.array(page_words, dtype=np.int64), focused_words
     first += n
 
