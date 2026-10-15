@@ -382,6 +382,8 @@
                 .fontSize,
             ) || 16,
           scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
+          // the pages of this site you opened before this one, in this tab, oldest first: the browser's own list, nothing stored
+          trail: (globalThis.navigation?.entries() ?? []).slice(0, navigation.currentEntry?.index ?? 0).map((e) => path(e.url)),
         };
         const scores = rank(JSON.parse(MODEL), controls, els.indexOf(from), page);
         // the best four; the focused control has no score (null)
@@ -465,6 +467,8 @@
     const pageSegments = page.path.split("/").filter(Boolean);
     // the control you used on the page before this one, and how deep that page was: { kind, label, depth }, when known
     const came = page.came ?? null;
+    const trail = page.trail ?? [],
+      depth = (p) => p.split(/[?#]/)[0].split("/").filter(Boolean).length;
     // how many on-screen controls are above y
     const above = (y) => {
       let lo = 0,
@@ -559,6 +563,12 @@
         page_slug_words: pageSegments.length ? pageSegments.at(-1).split(/[-_]+/).filter(Boolean).length : 0,
         page_number: /[0-9]{3,}/.test(page.path),
         page_query: !!page.query,
+        // the pages of this site before this one in the tab: how many, how deep the last one was (-1: none, 0: the home page),
+        // whether it had a query (results), whether the home page was among them
+        trail_len: trail.length,
+        prev_depth: trail.length ? depth(trail.at(-1)) : -1,
+        prev_query: trail.length > 0 && trail.at(-1).includes("?"),
+        been_home: trail.some((p) => depth(p) == 0),
         // how you came here: not known (0), by a link (1), by typing into a field and pressing Enter (2), by another control (3); how
         // deep the page you came from was (-1: not known, 0: the site's home page); and whether this is the control you used there
         came_by: !came ? 0 : /^(a|link)$/.test(came.kind) ? 1 : isField(came) ? 2 : 3,
