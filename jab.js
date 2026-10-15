@@ -462,6 +462,9 @@
     const known = controls.filter((c) => c.hit >= 0),
       occludedShare = known.length ? known.filter((c) => c.hit == 0).length / known.length : 0;
     const regionSize = count(controls.filter((c) => c.region >= 0).map((c) => c.region));
+    const pageSegments = page.path.split("/").filter(Boolean);
+    // the control you used on the page before this one, and how deep that page was: { kind, label, depth }, when known
+    const came = page.came ?? null;
     // how many on-screen controls are above y
     const above = (y) => {
       let lo = 0,
@@ -551,6 +554,16 @@
         href_number: /[0-9]{3,}/.test(hrefPath(c)),
         // how much the page reads
         page_prose: page.prose,
+        // the page's own address: how deep, a slug of words or a number at its end (an article, a product), a query (results)
+        page_depth: pageSegments.length,
+        page_slug_words: pageSegments.length ? pageSegments.at(-1).split(/[-_]+/).filter(Boolean).length : 0,
+        page_number: /[0-9]{3,}/.test(page.path),
+        page_query: !!page.query,
+        // how you came here: not known (0), by a link (1), by typing into a field and pressing Enter (2), by another control (3); how
+        // deep the page you came from was (-1: not known, 0: the site's home page); and whether this is the control you used there
+        came_by: !came ? 0 : /^(a|link)$/.test(came.kind) ? 1 : isField(came) ? 2 : 3,
+        came_from_depth: came ? came.depth : -1,
+        used_before: !!came && c.kind == came.kind && c.label == came.label,
       };
       kindSeen.set(c.kind, (kindSeen.get(c.kind) ?? 0) + 1);
       const own = [
