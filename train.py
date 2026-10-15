@@ -7,10 +7,12 @@
 Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
 which puts the controls in the order of their scores. The shipped trees: --all. The features are jab.js's own: its describe()
 works them out under Node, so training sees exactly what the browser computes.
-steps.jsonl.gz (not included): 6,333 steps on 1,244 real sites, and 2,563 on 1,105 of the most visited sites whose robots.txt
-allows it (904 as the page opens, 1,659 with something already focused), labelled by Claude from screenshots; and 8,674 steps on
-5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie
-pop-ups; six languages), labelled by rule and counted at half weight; all collected by jab.js's own collector. One step per line:
+steps.jsonl.gz (not included): 6,012 steps on 1,179 real sites; 2,296 on about 1,030 of the most visited sites (817 as the home
+page opens, 1,479 with something already focused) and 1,128 on pages a visitor reaches from those home pages on 662 of them (a
+search or a link, then a link on the page that opened); each page allowed by its robots.txt to anyone, ClaudeBot, anthropic-ai and
+Claude-User, no adult sites; labelled by Claude from screenshots. And 8,674 steps on 5,000 generated pages (news, results,
+articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie pop-ups; six languages), labelled by
+rule and counted at half weight; all collected by jab.js's own collector. One step per line:
 {"split": "train"|"eval", "type": the kind of page ("real" or "live" for a real site), "page": {"path", "title", "desc", "scroll",
 "h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
 next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
