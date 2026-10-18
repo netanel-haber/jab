@@ -12,6 +12,6 @@
   "homepage_url": "https://jab.run",
   "description": "Ctrl+Q highlights the control/field the ranker assumes you want, based on the current page, focused elements, etc. Enter uses it.",
   "icons": {
-    "128": "icon.png"
+    "128": "docs/icon.png"
   }
 }

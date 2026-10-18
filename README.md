@@ -1,4 +1,4 @@
-<img src="icon.png" alt="jab" height="64">
+<img src="https://jab.run/icon.png" alt="jab" height="64">
 
 Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control/field that the ranker assumes you want, based on the current page, focused elements, etc. <kbd>Enter</kbd> uses it.
 
@@ -8,9 +8,9 @@ Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control/field that the 
 
 > We have `tab` at home.
 
-<img src="demo.gif" width="840" alt="jab on a news page: Ctrl+Q highlights the top story, and Enter opens it.">
+<img src="https://jab.run/demo.gif" width="840" alt="jab on a news page: Ctrl+Q highlights the top story, and Enter opens it.">
 
-The ranker is lean: Just 9KB, LightGBM (2016) trees running in-browser CPU-only in about 2ms. No network requests, nothing leaves the browser ([privacy](PRIVACY.md)).
+The ranker is lean: Just 9KB, LightGBM (2016) trees running in-browser CPU-only in about 2ms. No network requests, nothing leaves the browser ([privacy](https://jab.run/PRIVACY.html)).
 
 - The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control (its badge reads 1 ↵), as well as 3 other picks with small numbered badges. Nothing is focused yet, so nothing pops open.
 - <kbd>Enter</kbd>: uses the highlighted control. A button is pressed, a link followed, a field focused (a date picker opens). Or just type: a highlighted text field gets the focus and what you type.
