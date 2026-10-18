@@ -1,0 +1,38 @@
+# The Chrome Web Store package for a version tag: the files manifest.json names (itself, its content scripts, its icons) and
+# nothing else, zipped and attached to the tag's release; a tag with no release yet gets a draft one, for its notes.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing version tag, e.g. v0.7.3
+        required: true
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Zip what the manifest names
+        run: |
+          version=$(jq -r .version manifest.json)
+          [ "v$version" = "$TAG" ] || { echo "manifest.json says $version, the tag is $TAG"; exit 1; }
+          files=$(jq -r '"manifest.json", .content_scripts[].js[], .icons[]' manifest.json | sort -u)
+          zip -X "jab-$version.zip" $files
+          unzip -l "jab-$version.zip"
+          echo "ZIP=jab-$version.zip" >> "$GITHUB_ENV"
+      - name: Attach it to the release
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --draft --title "jab ${TAG#v}" --notes ""
+          fi
