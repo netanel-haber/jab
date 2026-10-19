@@ -55,6 +55,15 @@
     e.querySelector("img")?.alt ||
     e.name ||
     "";
+  // a field for searching: by what it is (type=search, a searchbox, in a search landmark), its name, or what it says it is for
+  const SEARCH =
+    /search|suche|busca|búsqueda|recherch|cerca|pesquis|zoek|szukaj|hledat|keres|arama|поиск|найти|пошук|חיפוש|חפש|بحث|جستجو|検索|搜索|搜尋|검색|tìm|cari|ค้นหา|खोज/i;
+  const isSearch = (e) =>
+    e.matches(`${TYPED},[role=searchbox],[role=combobox]`) &&
+    (e.matches("input[type=search],[role=searchbox]") ||
+      !!near(e, "[role=search],search") ||
+      /^(q|query|s|k|keyword|keywords)$/.test(e.name ?? "") ||
+      SEARCH.test(`${label(e)} ${e.name ?? ""} ${e.id} ${e.form?.getAttribute("action") ?? ""}`));
   const inView = (r) => r.bottom >= 0 && r.top <= innerHeight && r.right >= 0 && r.left <= innerWidth;
   const q = (v) => Math.floor(Math.round(v) / 10 + 0.5) * 10; // viewport pixels, to the nearest 10
   // every control, including those inside open shadow roots, in page order
@@ -223,7 +232,7 @@
   };
   const note = (message) => setTimeout((n) => n.remove(), 4000, draw("note", message));
 
-  // A session: our top 4 picks and their badges. The first Ctrl+Q only lights pick 1 (lit): nothing is focused, so nothing opens,
+  // A session: our 2 to 4 picks and their badges. The first Ctrl+Q only lights pick 1 (lit): nothing is focused, so nothing opens,
   // and Enter uses it. A tap of Ctrl+Q, or Ctrl+Q and a digit, is you choosing: the focus goes to that pick, and from there on your
   // keys are the page's again. Anything else you do ends the session, and so do 10 s without a press.
   let ses = null,
@@ -383,7 +392,8 @@
             ) || 16,
           scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
         };
-        const scores = rank(JSON.parse(MODEL), controls, els.indexOf(from), page);
+        const model = JSON.parse(MODEL),
+          scores = rank(model, controls, els.indexOf(from), page);
         // a link to this very page would only load it again (one with a #fragment moves within it, and a role=button one is the
         // page's script), so it is never a pick
         const reloads = (e) => {
@@ -396,16 +406,31 @@
             e.href == location.href.split("#")[0]
           );
         };
-        // the best four; the focused control has no score (null)
-        const ranked = scores
-          .map((v, i) => [v, els[i]])
+        // every control by its score (the focused one has none: null), and of two that lead to the same place only the better one
+        const place = places(controls),
+          taken = new Set();
+        const order = scores
+          .map((v, i) => [v, els[i], controls[i]])
           .filter(([v, el]) => v !== null && !reloads(el))
           .sort((a, b) => b[0] - a[0])
-          .slice(0, 24)
+          .filter(([, , c]) => !taken.has(place.get(c.i)) && taken.add(place.get(c.i)));
+        // the best two, and the 3rd and 4th when they are more likely wanted than not (the score train.py found for that)
+        const best = order
+          .slice(0, 4)
+          .filter(([v], k) => k < 2 || v >= (model.sure ?? -Infinity))
           .map(([, el]) => el);
-        const best = ranked.slice(0, 4); // the next 20 stand in for a pick that turns out not to take the focus
+        // and the page's search field, unless you are typing into something: the one in the page's content (a filter, a
+        // section's own search) before the site's, as the last pick
+        const searches = from?.matches(`${TYPED},${EDITABLE}`) ? [] : order.filter(([, el]) => isSearch(el));
+        const search = (searches.find(([, , c]) => !c.chrome) ?? searches[0])?.[1];
+        if (search && !best.includes(search)) best.splice(Math.min(best.length, 3), 1, search);
         if (!best.length) return note("jab found nothing to jump to here.");
-        ses = { els: best, rest: ranked.slice(4), badges: best.map((_, i) => draw("badge", i + 1)), lit: true };
+        // the next 20 stand in for a pick that turns out not to take the focus
+        const rest = order
+          .map(([, el]) => el)
+          .filter((el) => !best.includes(el))
+          .slice(0, 20);
+        ses = { els: best, rest, badges: best.map((_, i) => draw("badge", i + 1)), lit: true };
         best[0].scrollIntoView({ block: "nearest", inline: "nearest" }); // the first press only lights the best pick, in view
         show();
         touch();
@@ -433,8 +458,35 @@
   );
   // words in any script (two letters or more, vowel marks kept), without the commonest little words
   const words = (s) => (s.toLowerCase().match(/\p{L}[\p{L}\p{M}]+/gu) ?? []).filter((w) => !STOP.has(w));
-  const hrefPath = (c) => c.href.split("#")[0].split("?")[0]; // where a link leads, without its query and fragment
   const length = (s) => [...s].length;
+  const hrefPath = (c) => c.href.split("#")[0].split("?")[0]; // where a link leads, without its query and fragment
+  // which links lead to the same place: a place per control (a link that leads nowhere it can be told by has its own). The address
+  // (kept without its host and cut at 40) is enough when it is whole and specific (2+ levels deep, or with a query); otherwise two
+  // links to it must also show they are one: they sit in the same item, or one's item reads the other's headline (a label of two
+  // words or more that nothing else on the page has)
+  const places = (controls) => {
+    const labels = count(controls.map((c) => c.label.trim().toLowerCase())),
+      headline = (c) => labels.get(c.label.trim().toLowerCase()) == 1 && words(c.label).length >= 2;
+    const one = (a, b) =>
+      (!!a.around?.trim() && a.around == b.around) ||
+      (headline(b) && !!a.around?.includes(b.label.trim())) ||
+      (headline(a) && !!b.around?.includes(a.label.trim()));
+    const byHref = new Map(),
+      place = new Map(controls.map((c) => [c.i, c.i]));
+    for (const c of controls)
+      if (c.href && !c.href.startsWith("#") && !/^javascript:/i.test(c.href))
+        byHref.get(c.href)?.push(c) ?? byHref.set(c.href, [c]);
+    for (const [href, cs] of byHref) {
+      const specific =
+        length(href) < 40 && (hrefPath(cs[0]).split("/").filter(Boolean).length >= 2 || href.includes("?"));
+      cs.forEach((c, k) => {
+        const same = specific ? cs[0] : cs.slice(0, k).find((d) => one(c, d));
+        if (same) place.set(c.i, place.get(same.i));
+      });
+    }
+    return place;
+  };
+  const isPicture = (c) => c.icon && c.w >= 100 && c.h >= 60; // a link that is a picture (an icon is smaller)
   // on screen as the trees learned it: within the 1280x900 every training page was captured at. Measuring a window against its own
   // size instead picked worse on the hand-labelled test pages; that needs training pages captured at other sizes first.
   const onScreen = (c) => c.w >= 4 && c.h >= 4 && c.y + c.h >= 0 && c.y <= 900 && c.x <= 1280;
@@ -463,6 +515,19 @@
       kindSeen = new Map(),
       labelCount = count(controls.map((c) => c.label.trim().toLowerCase())),
       hrefCount = count(controls.map(hrefPath));
+    // the links that lead to the same place as another: is one of the others text, is one a picture; how much of what is linked on
+    // screen is pictures (a page of pictures, where the pictures are what you came for)
+    const placeOf = places(controls),
+      textTo = new Map(),
+      pictureTo = new Map();
+    for (const c of controls) {
+      const by = isPicture(c) ? pictureTo : c.label.trim() ? textTo : null;
+      by?.set(placeOf.get(c.i), (by.get(placeOf.get(c.i)) ?? 0) + 1);
+    }
+    // how many of the others that lead where c leads are in by (c itself counted there when self)
+    const others = (by, c, self) => (by.get(placeOf.get(c.i)) ?? 0) - self;
+    const shownLinks = shown.filter((c) => c.href),
+      pictureShare = shownLinks.length ? shownLinks.filter(isPicture).length / shownLinks.length : 0;
     const fields = all.filter((c) => isField(c) && c.form >= 0), // the typing fields that sit in a form
       formFields = count(fields.map((c) => c.form)),
       firstField = new Map();
@@ -562,6 +627,11 @@
         href_depth: segments.length,
         slug_words: segments.length ? segments.at(-1).split(/[-_]+/).filter(Boolean).length : 0,
         href_number: /[0-9]{3,}/.test(hrefPath(c)),
+        // a picture, and the others that lead to the same place: text (a headline, a name) or pictures
+        picture: isPicture(c),
+        same_place_text: others(textTo, c, !isPicture(c) && !!c.label.trim()),
+        same_place_picture: others(pictureTo, c, isPicture(c)),
+        page_pictures: pictureShare,
         // how much the page reads
         page_prose: page.prose,
         // the page's own address: how deep, a slug of words or a number at its end (an article, a product, a model)
@@ -599,7 +669,7 @@
   };
   // The trees, as JSON (written here by train.py, see there). Only a press parses them, so a page that never asks never holds them.
   const MODEL =
-    '{"features":["x","y","w","h","index","index_frac","screen_rank","on_screen_count","controls_above","page_scroll","kind","same_kind_rank","same_kind_count","inputs_on_screen","label_len","label_words","no_parent_text","before_len","nothing_focused","index_delta","focus_dy","focus_dist","focus_filled","same_region","is_submit","submit_like","first_field","form_fields","in_focus_form","after_focus","empty_fields_left","empty_field","fill","sat","round","bold","icon","sat_rank","hit","occluded_share","lcover","lz","foreground","region_size","heading","font","font_rank","in_frame","alike","alike_index","prose","label_repeats","href_repeats","href_depth","slug_words","href_number","page_prose","page_depth","page_slug_words","page_number"],"kinds":{"a":0,"button":1,"input text":2,"tab":3,"input checkbox":4,"link":5,"menuitem":6,"input email":7,"div":8,"select":9,"summary":10,"input search":11,"input radio":12,"input submit":13,"textarea":14,"input password":15,"input number":16,"span":17,"li":18,"tabpanel":19,"region":20,"input tel":21,"combobox":22,"iframe":23,"radio":24,"group":25,"listitem":26,"img":27,"textbox":28,"checkbox":29},"words":["w:item","w:search","w:docs","w:privacy","w:products","w:home","w:login","w:company","w:get","w:support","w:resources","w:features","w:free","w:careers","w:cookie","w:slide","w:sign","w:opens","w:reviews","w:ago","w:hours","w:pricing","w:signup","w:skip","w:fk","w:start","w:download","w:logo","w:name","w:started","w:community","w:image","w:dp","w:partners","w:author","w:demo","w:subscribe","w:close","w:hl","w:request","w:register","w:accept","w:documentation","w:message","w:max","w:sort","w:sdk","w:only","w:academics","w:admissions","w:xs","w:advertisement","w:min","c:in","c:by","c:comments","c:free","c:pricing","c:start","c:log","c:started","c:docs","c:download","c:box","c:chat","c:español","c:request","p:docs"],"trees":[[6,0,[28,0,[6,-1,[50,28,-37,-12],[34,0.0801,-19,19]],34],[9,3.254,[2,0.082,[48,0,11,-19],24],[20,-0.983,-36,27]]],[29,0,[31,0,[47,0,[22,0,[6,1,-11,[37,1,22,[46,1,21,[42,0.609,0,26]]]],-27],-17],23],[19,2,34,-2]],[38,0,[23,0,-22,[20,0.106,18,-10]],[49,3,[3,0.04,[48,7,[25,0,-4,16],18],[26,0,[35,0.495,6,16],29]],-18]],[1,0.95,[34,0.070595,[23,0,[46,9,[1,0.07,[0,0.082,-24,-1],7],-8],[24,0,7,28]],11],[29,0,-22,[19,1,25,-14]]],[6,-1,[28,0,-21,15],[2,0.066,[24,0,[1,0.43,-3,-17],22],[32,0.996,[19,-1,-3,[45,1.022,3,14]],[20,0.13,15,2]]]],[46,-1,[29,0,-20,15],[32,0.996,[46,3,9,[25,0,[2,0.06,[81,0,-13,22],-2],10]],[19,-1,0,[3,0.017,-31,13]]]],[38,0,[29,0,[4,28,[56,1.95,-6,-28],-21],14],[2,0.098,[23,0,[49,0,-1,-11],[24,0,6,23]],[21,0.2513,10,4]]],[38,0,[27,0,-16,8],[31,0,[47,0,[19,6,[19,0,[22,0,3,-19],[19,1,22,7]],-5],[9,3.485,-15,3]],16]],[38,0,[11,17,[29,0,-8,13],-19],[2,0.05,[29,0,-7,18],[19,-1,-2,[26,0,[23,0,[101,0,2,24],14],23]]]],[38,-1,[23,0,[50,38,-19,2],5],[49,1,[36,0,[3,0.03,[48,8,-2,14],7],-3],[50,83,[35,0.41,-12,1],9]]],[1,1.74,[47,0,[20,0.217,[19,0,[33,0.10296,[22,0,0,-17],10],[19,1,21,4]],-5],[9,3.327,-14,-2]],[28,0,-20,8]],[38,0,[29,0,[1,2.25,-8,-20],[19,4,16,-27]],[2,0.12,[3,0.03,-6,[36,0,4,-5]],[19,-1,-4,[46,3,14,5]]]],[38,0,[11,19,-3,-17],[31,0,[35,0.423,[24,0,[2,0.027,-13,[50,94,-2,12]],15],[1,0.04,[0,0.066,-30,0],7]],13]],[19,12,[19,0,[49,0,[38,0,-8,[2,0.043,-6,[19,-1,-1,[1,0.06,-5,8]]]],[50,74,-10,6]],[19,2,14,1]],-11],[1,1.906,[2,0.05,[25,0,[117,0,-9,19],7],[36,0,[2,0.246,[37,3,6,[46,13,2,-4]],9],-4]],[28,0,-19,6]],[20,0.46,[19,0,[32,0.035,[50,28,[38,0,-11,-3],[57,1,-1,16]],[101,0,3,22]],[19,4,[19,1,15,6],-2]],-11],[21,1.3026,[47,0,[27,0,[35,0.495,[62,0,[14,4,-12,[11,34,[53,0,-5,2],-11]],17],5],8],[38,0,-23,-4]],-17],[20,0.75,[31,0,[33,0.1534,[54,0,[24,0,[123,0,-7,26],12],[45,1.016,[11,52,[22,0,1,-13],-13],8]],7],11],-13],[1,2.17,[31,0,[35,0.423,[46,6,[50,43,[27,2,[38,0,-8,2],-28],15],[3,0.04,-7,-1]],3],9],[29,0,-18,6]],[19,27,[47,0,[19,-1,-3,[101,0,[26,0,[23,0,[1,0.74,2,[58,5,-6,18]],8],18],25]],[1,0.23,-3,-17]],-11],[38,0,[56,1.95,[50,40,[21,1.3244,-3,-17],[39,0,29,-25]],-22],[34,0.1228,[2,0.152,-2,[19,-1,-10,[10,7,6,-8]]],4]],[21,1.84323,[2,0.027,-9,[47,0,[36,0,[46,2,[9,4.024,10,[6,0,-8,6]],1],-3],[38,0,-22,[57,0,1,-10]]]],-16],[20,0.33,[19,0,[49,3,[48,12,[33,0.464,-2,[96,0,6,-23]],10],-9],[19,3,[24,0,7,18],-1]],[2,0.098,-13,-2]],[3,0.017,-13,[36,0,[50,44,[3,0.03,[44,2,-4,14],[105,0,2,-42]],[45,0.927,-11,12]],[16,0,-2,[25,0,-15,5]]]],[19,8,[19,0,[47,0,[26,0,[72,0,-1,14],[28,0,17,-42]],-6],[19,1,[31,0,8,25],[45,0.866668,-1,8]]],-6],[1,2.57,[25,0,[2,0.066,[14,8,[81,0,-2,18],-9],[10,2,[1,0.03,[123,0,-6,22],3],[31,0,-13,4]]],6],-13],[29,0,[1,2.84,[14,0,-14,[2,0.027,-8,[87,0,[63,0,[52,0,0,[54,0,-8,4]],-17],-30]]],-18],[14,18,12,-10]],[29,0,[1,2.84,[101,0,[54,2,[1,0.67,[49,3,[58,6,1,-17],-11],-5],4],[45,0,[18,0,-35,25],24]],-17],8],[47,0,[3,0.017,-11,[77,0,[31,0,1,[13,9,[19,-1,[23,0,8,-38],12],-27]],-21]],[38,0,-22,[57,1,0,-12]]],[38,0,[56,1.85,[50,22,[24,0,-5,14],[39,0,23,-26]],-22],[49,2,[48,9,[114,0,1,-16],[19,-1,-16,10]],-5]],[68,0,[2,0.215,[50,89,[49,0,[95,0,-1,16],[81,0,-7,20]],[57,1,-5,19]],[19,-1,-7,[36,0,7,-2]]],10],[11,52,[1,0.04,[57,1,[0,0.09,-13,1],[123,0,[45,0.575,-3,-24],24]],[71,0,[2,0.01,-19,[78,0,2,-22]],-23]],-7],[76,0,[29,0,[1,3.37,[15,0,-10,[10,2,[2,0.19,[116,0,[42,0.693,-1,7],11],[19,-1,-6,5]],-6]],-17],7],10],[0,0.02,[123,0,[1,0.06,-23,-4],21],[3,0.017,-9,[0,0.348,[3,0.05,1,6],[19,4,[19,0,[82,0,-1,14],5],-6]]]],[101,0,[63,0,[29,0,[53,0,[40,0.992,[110,0,-3,44],10],[17,19,[81,0,[113,0,-3,8],13],3]],6],-16],12],[19,31,[47,0,[62,0,[61,0,[2,0.043,-5,[10,-1,-24,1]],7],[0,0.035,-24,14]],[57,0,[1,0.23,2,-12],-9]],-8],[21,3.0214,[36,0,[46,2,[55,0,2,[19,-1,-25,[39,0.048,[46,0,25,8],-13]]],[119,0,0,9]],[16,0,-1,-8]],-16],[109,0,[31,0,[35,0.423,[50,99,[25,0,[38,0,[9,3.765,-1,-12],-2],4],[57,1,-5,14]],2],[112,0,6,-50]],24],[20,0.17,[19,0,[42,0.693,[86,0,-1,17],8],[24,0,[31,0,2,14],16]],[45,0.93,[37,0,-15,-4],[37,0,12,-1]]],[72,0,[44,2,[1,0.77,[49,1,1,[38,0,-23,-3]],[45,0.883,[32,0.815,-11,0],[9,1.4547,[103,0,-17,23],4]]],7],9],[98,0,[87,0,[74,0,[70,0,[51,11,[47,0,[0,0.934,1,-8],[57,0,[8,13,2,-14],-8]],-13],-14],-16],-27],-25],[109,0,[55,0,[34,0.09023,[54,4,[0,0.035,-7,[62,0,[11,21,-1,-7],11]],6],[48,7,[14,34,2,-7],-10]],4],21],[82,0,[1,0.03,[57,1,[14,8,2,-5],-14],[46,4,[39,0.0184,[48,7,3,[19,-1,-26,13]],[38,-1,-16,1]],-1]],10],[86,0,[61,0,[91,0,[2,0.02,-10,[10,-1,-20,[78,0,[1,0.03,[57,0,-1,-8],0],-19]]],-27],[59,0,6,-30]],13],[95,0,[11,66,[106,0,[5,0.970363,[52,0,[51,0,0,-6],[16,0,2,-12]],[56,0,[18,0,-13,13],14]],-34],-7],11],[94,0,[98,0,[29,0,[10,2,0,[13,9,-4,-24]],[19,1,[31,0,[24,0,-14,21],24],[30,1,6,-14]]],-24],-24],[65,0,[46,4,[48,8,[11,65,[62,0,1,15],-16],[56,0,16,3]],[49,0,0,[38,0,-17,[41,0.50032,-4,9]]]],-9],[126,0,[8,26,[110,0,[102,0,[60,0,[64,0,0,9],9],19],33],[103,0,[45,1.0425,-4,[49,9,0,23]],23]],14],[68,0,[19,-9,[31,0,-4,10],[84,0,[79,0,[10,2,0,[12,1,[2,0.06,15,-2],[8,12,-3,-16]]],-27],12]],7],[85,0,[1,0.583,1,[9,1.4547,[103,0,-10,21],[45,0.9234,[38,-1,-12,-1],[38,-1,[56,1.95,13,-20],[38,0,-30,1]]]]],10],[109,0,[29,0,[15,0,-7,[17,19,-1,[48,7,0,5]]],[24,0,[31,0,[46,2,-27,-1],12],[30,0,21,-7]]],18],[51,11,[0,0.473,[47,0,2,-4],[127,0,[41,0.581,-2,[45,0.504,[18,0,[1,0.206,7,-19],11],12]],[11,14,-12,22]]],-13],[93,0,[83,0,[74,0,[123,0,[120,0,[42,0.0372,[2,0.12,-2,[41,0,2,-6]],2],7],[10,0,-24,23]],-14],-27],-21],[66,0,[97,0,[8,27,[1,0.04,[57,0,[81,0,[62,0,-1,21],15],-8],[71,0,[19,-1,-2,2],-19]],-3],14],6],[61,0,[55,0,[38,0,[56,1.95,[37,14,-1,-9],-22],0],[46,1,9,[49,4,2,-12]]],[30,0,5,[43,1,-37,1]]],[100,0,[111,0,[3,0.017,-7,[29,0,[1,4.117,[55,0,0,[46,0,[39,0.117,13,-19],[49,3,3,-8]]],-16],6]],-38],12],[106,0,[118,0,[44,2,[20,0.13,[19,0,[42,0.699,-1,6],[19,1,[41,0.515,9,-14],0]],-3],[57,1,1,16]],7],-32],[2,0.582,[2,0.246,[82,0,[40,0.35663,[8,24,[110,0,0,28],-4],6],9],[41,0,4,-6]],[115,0,[21,0.0704,3,-14],-39]],[108,0,[63,0,[75,0,[90,0,[69,0,[87,0,[126,0,[0,1.44,[45,2.003,0,11],-22],11],-23],-11],-19],-20],-11],18],[104,0,[31,0,[19,-9,-3,[61,0,[16,0,0,[27,0,-8,9]],6]],[43,2,[23,0,1,[22,0,-37,26]],9]],-28],[78,0,[122,0,[76,0,[1,0.04,[58,0,0,[45,0.546,-1,-13]],[19,-1,[1,0.23,0,-5],[51,1,1,-4]]],6],9],-18],[5,0.02944,[65,0,3,-18],[0,0.254,[35,0.423,[15,2,[45,0.666,3,-8],4],4],[62,0,[38,0,[12,86,-3,-13],-1],11]]],[101,0,[89,0,[61,0,[37,2,[3,0.094,2,-8],-1],[59,0,4,-27]],[20,0.394,10,-15]],[18,0,[45,0,-31,22],19]],[2,0.535,[101,0,[116,0,[2,0.215,[50,79,[50,39,-1,-11],[52,4,[9,5.392,10,-7],-13]],2],6],9],[115,0,-5,-36]],[73,0,[91,0,[88,0,[10,-1,-14,[5,0.9737,[1,0.74,[38,0,[56,0,0,-23],[1,0.206,0,2]],-2],6]],10],-19],-22],[125,0,[77,0,[80,0,[60,0,[100,0,[25,0,[1,0.017,[124,0,-4,22],[94,0,0,-22]],3],10],7],-27],-14],-25],[2,0.01,-13,[109,0,[63,0,[92,0,[33,0.8838,[0,0.324,1,-1],[41,0.285,1,[107,0,10,-30]]],13],[45,0.438,-24,-2]],15]],[43,1,[29,0,[1,0.04,[57,0,-2,[7,10,-1,-19]],[19,-1,[23,0,-4,-28],0]],14],[72,0,0,[20,0.15,11,-14]]],[99,0,[23,0,[26,0,-1,[43,2,[58,2,2,-24],16]],[20,-0.05,[17,2,20,-9],[26,0,[24,0,3,14],-31]]],13],[86,0,[67,0,[121,0,[0,0.94,[66,0,[10,-1,-16,0],5],[127,0,-9,17]],[57,1,[2,0.035,27,6],-27]],-12],9]]}';
+    '{"features":["x","y","w","h","index","index_frac","screen_rank","on_screen_count","controls_above","page_scroll","kind","same_kind_rank","inputs_on_screen","label_len","label_words","no_parent_text","before_len","nothing_focused","index_delta","focus_dy","focus_dist","focus_filled","same_region","is_submit","submit_like","first_field","form_fields","in_focus_form","after_focus","empty_fields_left","empty_field","fill","sat","round","bold","icon","sat_rank","hit","occluded_share","lcover","lz","foreground","region_size","heading","font","font_rank","in_frame","alike","alike_index","prose","label_repeats","href_repeats","href_depth","slug_words","href_number","picture","same_place_text","same_place_picture","page_prose","page_depth","page_slug_words","page_number"],"kinds":{"a":0,"button":1,"input text":2,"tab":3,"input checkbox":4,"link":5,"menuitem":6,"input email":7,"div":8,"select":9,"summary":10,"input search":11,"input radio":12,"input submit":13,"textarea":14,"input password":15,"input number":16,"span":17,"li":18,"tabpanel":19,"region":20,"input tel":21,"combobox":22,"iframe":23,"radio":24,"group":25,"listitem":26,"img":27,"textbox":28,"checkbox":29},"words":["w:to","w:html","w:item","w:search","w:docs","w:privacy","w:new","w:products","w:policy","w:blog","w:home","w:login","w:get","w:support","w:resources","w:features","w:free","w:careers","w:cookie","w:slide","w:sign","w:opens","w:reviews","w:ago","w:pricing","w:signup","w:skip","w:fk","w:start","w:download","w:logo","w:name","w:started","w:community","w:image","w:partners","w:author","w:demo","w:subscribe","w:close","w:hl","w:register","w:try","w:accept","w:documentation","w:message","w:max","w:sort","w:sdk","w:academics","w:admissions","w:xs","w:advertisement","w:min","w:pause","c:by","c:points","c:comments","c:free","c:products","c:start","c:log","c:started","c:docs","c:download","c:page","c:box","c:chat","c:español","c:guides","c:request","p:docs"],"trees":[[37,-1,[28,0,-35,36],[3,0.04,[9,3.254,[46,0,[4,1,-18,[45,6,24,0]],-26],19],[4,0,2,[37,0,9,30]]]],[31,0.013,[22,0,[6,0,[49,30,-26,9],[35,0,[21,0,1,-24],-16]],12],[18,-1,[21,0,6,-33],[18,3,20,1]]],[37,0,[26,0,[4,24,-11,-26],[18,1,24,-15]],[2,0.09,[28,0,[9,3.717,-10,1],21],[25,0,[10,7,9,-11],29]]],[36,-1,[28,0,-23,20],[48,2,[2,0.06,[23,0,-7,25],[18,-1,-1,[18,6,[46,0,[45,1,24,12],1],-1]]],-15]],[37,0,[27,0,[1,1.94,-13,-24],17],[33,0.06273,[44,1.0027,[30,0,[34,0.495,[24,0,-7,11],5],21],[1,0.04,-12,15]],11]],[1,0.94,[30,0,[32,0.1534,[23,0,[21,0,[2,0.043,-11,[45,3,[52,0,-3,14],-1]],-18],19],13],19],[28,0,-19,14]],[37,0,[22,0,-17,8],[2,0.066,[27,0,[45,7,0,-11],18],[35,0,[48,3,[19,0.17,[1,0.06,2,12],1],-9],-2]]],[37,-1,[27,0,-18,10],[30,0,[34,0.423,[28,0,[3,0.017,-20,[49,84,[21,0,-2,-14],14]],14],[1,0.03,-3,8]],16]],[37,0,[28,0,[4,29,-8,-19],[18,1,22,-10]],[31,0.71,[14,1,[9,3.254,-10,0],3],[19,0.13,[28,0,8,21],-2]]],[37,0,[28,0,[4,20,-6,-17],[18,4,18,-25]],[2,0.074,[47,0,1,[86,0,-11,29]],[18,-1,-3,[30,0,5,16]]]],[19,0.46,[18,0,[48,0,[35,0,[105,0,[1,0.74,[47,12,[30,0,2,14],24],-6],26],-7],-9],[18,1,22,1]],-13],[37,0,[26,0,[1,2.25,[46,0,-6,-24],-20],8],[2,0.098,[22,0,[33,0.0835,-6,3],[23,0,3,21]],[13,4,-12,6]]],[20,1.3244,[46,0,[2,0.027,[23,0,-14,16],[31,0.996,[1,0.694,3,-5],[13,42,8,-10]]],[1,0.23,[59,0,1,-12],-18]],-18],[36,-1,[27,0,[49,23,-17,7],8],[28,0,[2,0.05,-6,[21,0,[25,0,[34,0.423,-1,5],[27,0,17,-44]],-10]],14]],[37,0,[58,1.75,[11,17,0,[57,0,-15,27]],-22],[18,-1,-3,[2,0.152,[22,0,-1,[18,2,14,-3]],[45,2,15,5]]]],[18,12,[18,0,[33,0.0874,[49,28,[6,0,-14,[24,0,-5,6]],[59,1,-1,17]],[37,0,-8,5]],[18,1,16,3]],-10],[20,1.401,[35,0,[2,0.19,[48,0,[19,0.106,3,-5],[49,74,[57,0,-9,18],[44,0.99996,-15,21]]],[18,-1,-9,10]],-6],-17],[11,50,[46,0,[35,0,[3,0.017,-14,[57,0,[19,0.283,[36,2,9,[18,-1,-3,4]],-4],16]],-4],[128,0,-8,23]],-11],[1,2.17,[46,0,[24,0,[2,0.05,-6,[13,0,-20,[44,0.9335,[6,0,-14,1],[1,0.04,-15,[18,-1,-8,7]]]]],9],-6],-13],[18,8,[18,0,[48,3,[37,0,[58,1.75,-5,-21],[47,12,[33,0.11568,[44,2.003,-2,21],4],12]],-10],[18,2,11,1]],-8],[18,27,[32,0.464,[30,0,[49,40,[24,0,[57,0,[1,0.894,[3,0.04,-5,0],-11],10],6],[45,12,12,-6]],9],6],-11],[20,1.84323,[46,0,[3,0.017,-13,[35,0,[67,0,[49,42,2,10],-20],[15,0,[56,0,1,-16],[24,0,-16,9]]]],-6],-16],[105,0,[28,0,[1,2.84,[45,8,[53,0,[10,0,[0,0.066,-22,-5],1],[47,7,2,11]],[48,1,-1,-9]],-18],9],16],[18,18,[18,0,[41,0.693,[87,0,[46,0,[25,0,[10,2,-1,-11],[27,0,15,-38]],-7],14],10],[18,3,8,-1]],-8],[11,52,[2,0.027,-7,[14,0,-12,[46,0,[44,0.9335,0,[37,-1,[38,0,24,-18],[37,0,-30,4]]],[37,0,-22,-2]]]],-8],[20,2.6066,[105,0,[45,12,[1,0.04,[59,1,[13,8,4,-5],[128,0,-19,28]],[77,0,3,-24]],[36,2,5,-4]],13],-16],[30,0,[1,2.617,[10,2,[15,0,[86,0,[57,0,[3,0.04,[49,43,-3,6],2],9],15],-8],[2,0.152,-4,-20]],-14],8],[23,0,[2,0.246,[37,0,[58,1.95,-5,-21],[38,0.693,[48,4,0,-11],8]],[56,0,[18,-1,-7,7],-15]],[22,0,0,17]],[19,0.283,[105,0,[78,0,[30,0,[86,0,[65,0,[53,2,[48,1,-1,[66,0,-8,11]],4],8],14],7],12],16],-5],[3,0.017,-11,[83,0,[14,0,-10,[20,2.6066,[46,0,[66,0,1,[0,0.09,-17,18]],[60,0,[8,13,3,-15],-9]],-15]],-21]],[34,0.495,[11,66,[45,6,[47,7,0,[18,-1,-23,11]],[48,0,[117,0,-1,-20],-7]],-12],[0,0.27,[1,0.04,-8,7],1]],[2,0.01,-18,[28,0,[1,3.094,[34,0.43,[45,4,2,-3],[52,0,[45,0,-16,0],[100,0,4,-26]]],-16],[13,11,13,-1]]],[92,0,[19,0.15,[18,0,[32,0.617,[128,0,[94,0,-2,17],21],5],[18,1,10,2]],[2,0.06,-14,[44,0.64,-5,3]]],-29],[67,0,[28,0,[1,3.46,[13,0,-14,[10,2,[2,0.215,0,[18,-1,-6,[45,0,14,4]]],-5]],-17],[3,0.03,-7,10]],-15],[57,0,[33,0.05261,[49,92,[24,0,-2,4],[59,1,-1,16]],[6,-1,[21,0,-19,9],[109,0,2,-39]]],[38,0.0594,13,-7]],[35,0,[2,0.215,0,[18,-1,[18,-8,4,-16],[45,1,[9,4.9294,[38,0.0494,20,-10],-6],3]]],[48,1,[45,0,-13,0],-11]],[120,0,[57,0,[28,0,[1,2.36,[112,0,-1,23],-15],[13,18,[18,1,17,[29,1,8,-14]],-8]],[59,1,0,17]],9],[0,0.94,[80,0,[76,0,[96,0,[2,0.02,-9,[124,0,[18,-9,-3,[105,0,1,[18,12,19,-8]]],10]],-25],-15],-18],-9],[99,0,[19,0.283,[18,0,[41,0.699,[82,0,[16,19,[86,0,-3,12],[77,0,1,-22]],10],8],[18,4,6,-2]],-4],13],[87,0,[54,0,[30,0,[24,0,[15,0,[10,-1,-25,[3,0.03,-3,0]],-8],4],5],[45,3,[38,0.102,12,-18],0]],10],[102,0,[57,0,[8,26,[1,0.04,[60,3,[60,0,[14,3,2,-15],-7],-27],[77,0,1,-21]],[5,0.941206,-5,6]],6],-26],[112,0,[120,0,[43,2,[85,0,[5,0.970363,[1,0.74,0,[49,40,-6,[9,4.234,12,-13]]],[44,0.546,-2,13]],-31],6],8],20],[132,0,[0,0.95,[0,0.02,[128,0,[1,0.06,-21,-4],23],[0,0.246,2,[66,0,[31,0.92,[24,0,-3,5],2],13]]],-9],15],[91,0,[50,11,[132,0,[2,0.215,[41,0.7246,[1,0.67,0,[9,1.484,-12,-2]],7],[56,0,[10,-1,-30,4],-15]],14],-14],13],[92,0,[18,30,[41,0.728,[18,0,[19,0.05,[105,0,-1,[17,0,-36,19]],-9],[20,0.3301,[19,0,10,3],-1]],8],-6],-25],[103,0,[46,0,[23,0,[0,0.44,[53,0,-2,3],-2],7],[59,0,[86,0,-1,23],[9,4.024,[127,0,-15,40],-2]]],13],[99,0,[67,0,[84,0,[89,0,[32,0.85166,[53,3,[113,0,[63,0,-1,5],40],[0,0.34,8,-3]],4],12],-20],-13],11],[30,0,[34,0.423,[49,99,[48,0,[47,9,-1,12],[86,0,-5,19]],[59,1,-5,13]],1],[115,0,[42,2,-1,10],-50]],[74,0,[95,0,[98,0,[90,0,[22,0,[1,3.46,-1,-14],[19,-0.017,-7,[23,0,2,[29,0,21,-11]]]],10],-22],-22],7],[110,0,[131,0,[73,0,[57,0,[19,0.394,[18,0,-1,2],-4],[59,1,0,[38,0.738,16,-29]]],[61,0,7,-32]],-27],-34],[112,0,[65,0,[50,10,[126,0,[47,8,[117,0,-1,-13],[18,-1,-15,[13,17,-1,8]]],10],-13],[61,0,5,-31]],18],[81,0,[50,11,[88,0,[96,0,[91,0,[39,0.99999995,[67,0,[87,0,[1,0.03,-2,0],8],-14],6],10],-22],-26],-13],-21],[101,0,[2,0.01,-14,[83,0,[107,0,[0,0.94,[80,0,[128,0,0,15],-16],[3,0.03,[133,0,-3,27],-12]],16],-15]],13],[113,0,[102,0,[93,0,[66,0,[56,0,0,[55,0,[4,25,1,-12],-29]],[42,16,10,-18]],10],-21],[13,9,37,-29]],[100,0,[122,0,[54,0,[37,0,[46,0,[61,0,-4,10],-20],0],[45,0,[44,0.9335,-16,15],[48,3,2,-10]]],7],-15],[98,0,[16,19,[118,0,-1,-18],[52,0,[62,0,[129,0,[69,0,[28,0,-2,8],21],22],-16],[0,0.457,4,-1]]],-20],[105,0,[1,0.606,[60,6,[37,0,-3,1],[1,0.34,-21,4]],[59,2,[2,0.082,-8,-1],7]],[44,0,[17,0,-38,24],20]],[75,0,[2,0.582,[2,0.293,[39,0.553,[123,0,[84,0,0,-18],6],6],[39,0.073443,5,-7]],[119,0,[58,0.55,-1,-15],-41]],-11],[113,0,[111,0,[114,0,[87,0,[72,0,[45,2,[38,0.028,4,-4],-1],[4,10,-17,2]],[19,-0.26,21,2]],-38],19],26],[108,0,[113,0,[105,0,[30,0,0,[18,-1,-4,6]],[18,-1,[58,0,-33,20],[14,3,14,-23]]],[11,13,32,-37]],-28],[10,2,[1,0.04,[59,1,[0,0.082,[68,0,-17,21],[13,8,3,-3]],[12,0,-5,-21]],1],[11,0,[3,0.17,1,-23],-12]],[104,0,[64,0,[1,0.76,0,[44,0.8122,-5,[37,-1,[38,0,[5,0.24002,-21,11],-17],[40,0.49996,-6,9]]]],[85,0,9,-27]],12],[79,0,[97,0,[121,0,[65,0,[13,0,[56,0,-5,-30],[125,0,0,9]],[61,0,4,-27]],[69,0,1,15]],-18],-21],[11,160,[71,0,[101,0,[106,0,[51,0,-1,[52,0,-5,[56,0,3,[55,0,0,-26]]]],15],[44,0.575,-9,21]],-11],-12],[46,0,[23,0,[21,0,0,[30,0,-10,[18,1,22,-2]]],6],[37,0,-18,[59,0,1,[11,27,[58,1.65,-12,-1],15]]]],[130,0,[1,0.017,[13,8,[73,0,-1,12],-6],[39,0.553,[70,0,[104,0,0,12],-14],[101,0,[20,0.0505,9,-1],30]]],-25],[16,19,[86,0,-1,10],[47,7,0,[18,-1,-19,[56,0,[2,0.49,[38,0,[44,0.883,-10,11],-3],[14,2,-30,6]],-10]]]],[48,3,[47,9,[19,0.917,0,[49,2,-15,9]],[18,-1,-11,[31,0.57,[84,0,9,-31],-10]]],[1,0.94,-7,[44,1.049,-4,12]]],[99,0,[20,4.052,[116,0,[107,0,[5,0.02944,[7,54,1,9],[54,0,[37,0,-3,0],[18,-1,-10,3]]],14],-35],-15],9],[0,0.48,[3,0.05,[45,3,2,-2],[1,0.94,[53,0,[3,0.35,1,-25],6],-8]],[133,0,[39,0.06446,-3,1],[11,15,-14,21]]]],"sure":-43}';
   // for train.py, which loads this file under Node and learns from describe()
   if (typeof module == "object") module.exports = { describe };
 }
