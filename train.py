@@ -5,14 +5,16 @@
 """jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
 Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
-which puts the controls in the order of their scores. The shipped trees: --all. The features are jab.js's own: its describe()
+which puts the controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"). The shipped trees: --all. The features are jab.js's own: its describe()
 works them out under Node, so training sees exactly what the browser computes.
 steps.jsonl.gz (not included): 6,012 steps on 1,179 real sites; 2,296 on about 1,030 of the most visited sites (817 as the home
 page opens, 1,479 with something already focused) and 1,128 on pages a visitor reaches from those home pages on 662 of them (a
 search or a link, then a link on the page that opened); each page allowed by its robots.txt to anyone, ClaudeBot, anthropic-ai and
 Claude-User, no adult sites; labelled by Claude from screenshots. And 8,674 steps on 5,000 generated pages (news, results,
 articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie pop-ups; six languages), labelled by
-rule and counted at half weight; all collected by jab.js's own collector. One step per line:
+rule and counted at half weight; all collected by jab.js's own collector. Where links lead to the same place, the label wants one
+of them: text over a picture of the same thing (on a page that is mostly pictures, the picture), else the one it ranked first.
+One step per line:
 {"split": "train"|"eval", "type": the kind of page ("real" or "live" for a real site), "page": {"path", "title", "desc", "scroll",
 "h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
 next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
@@ -260,6 +262,26 @@ def predict(M):
     return out
 
 
+def sure(steps_):
+    """The score below which a 3rd or 4th stop is more often unwanted than wanted (counting as training does), over these steps
+    ranked as jab.js ranks them: jab.js leaves such a stop out; the first two always show. None when no score is that low."""
+    X, ids = rows(steps_, every=True)
+    scores = predict(X)
+    stops, start = [], 0
+    for s, i in zip(steps_, ids):
+        part, wanted = scores[start : start + len(i)], relevance(s, i)
+        start += len(i)
+        stops += [(part[j], 1 - 2 * (wanted[j] > 0), 1 if s["type"] in ("real", "live") else 0.5)
+                  for j in np.argsort(-part, kind="stable")[2:4]]
+    stops.sort(key=lambda t: t[0])
+    gain = np.cumsum([sign * w for _, sign, w in stops])  # hiding every stop up to this one: the unwanted hidden less the wanted
+    k = int(gain.argmax()) if stops else 0
+    return int(stops[k][0]) + 1 if stops and gain[k] > 0 else None
+
+
+ranker["sure"] = sure(train)
+
+
 def report(name, steps_):
     """Over all steps and per kind of page, for the trees as written into jab.js, ranking every control as jab.js does: is the first
     stop wanted (what training rewards: the target, a pick still ahead of it, an also-fine one; not a pick already visited), is it
@@ -294,4 +316,5 @@ jab = pathlib.Path(args.jab)
 source, found = re.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_json + "'", jab.read_text(encoding="utf-8"))
 assert found == 1, f"{jab} has no MODEL string"
 jab.write_text(source, encoding="utf-8")
-print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab}")
+print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab};", end=" ")
+print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}")
