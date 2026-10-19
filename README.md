@@ -1,6 +1,6 @@
 <img src="https://jab.run/icon.png" alt="jab" height="64">
 
-Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control/field that the ranker assumes you want, based on the current page, focused elements, etc. <kbd>Enter</kbd> uses it.
+**Smart Tab.** Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control/field that the ranker assumes you want, based on the current page, focused elements, etc. <kbd>Enter</kbd> uses it.
 
 **[Add to Chrome](https://chromewebstore.google.com/detail/jab/dfnikmnfgjnbmhfnpeigignlgpkggbji)**
 

@@ -2,7 +2,7 @@
 
 Last updated: October 14, 2026
 
-jab is a browser extension that highlights the control you most likely want next when you press Ctrl+Q, and uses it when you press Enter.
+jab is a smart tab: a browser extension that highlights the control you most likely want next when you press Ctrl+Q, and uses it when you press Enter.
 
 ## What jab reads
 

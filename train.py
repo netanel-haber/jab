@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "scipy", "lightgbm"]
 # ///
-"""jab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
+"""jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
 Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
 which puts the controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"). The shipped trees: --all. The features are jab.js's own: its describe()
