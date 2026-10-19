@@ -384,10 +384,22 @@
           scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
         };
         const scores = rank(JSON.parse(MODEL), controls, els.indexOf(from), page);
+        // a link to this very page would only load it again (one with a #fragment moves within it, and a role=button one is the
+        // page's script), so it is never a pick
+        const reloads = (e) => {
+          const href = e.getAttribute("href")?.trim();
+          return (
+            e instanceof HTMLAnchorElement &&
+            !!href &&
+            !href.includes("#") &&
+            e.getAttribute("role") != "button" &&
+            e.href == location.href.split("#")[0]
+          );
+        };
         // the best four; the focused control has no score (null)
         const ranked = scores
           .map((v, i) => [v, els[i]])
-          .filter(([v]) => v !== null)
+          .filter(([v, el]) => v !== null && !reloads(el))
           .sort((a, b) => b[0] - a[0])
           .slice(0, 24)
           .map(([, el]) => el);
