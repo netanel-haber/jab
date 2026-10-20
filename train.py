@@ -9,18 +9,21 @@ which puts the controls in the order of their scores, with the score a 3rd or 4t
 score below which the best guess is more likely wrong than right, where the page's search leads instead ("lead"). The shipped
 trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what the browser
 computes.
-steps.jsonl.gz (not included): 6,012 steps on 1,179 real sites; 2,296 on about 1,030 of the most visited sites (817 as the home
-page opens, 1,479 with something already focused) and 1,128 on pages a visitor reaches from those home pages on 662 of them (a
-search or a link, then a link on the page that opened); each page allowed by its robots.txt to anyone, ClaudeBot, anthropic-ai and
-Claude-User, no adult sites; labelled by Claude from screenshots. And 8,674 steps on 5,000 generated pages (news, results,
-articles, feeds, listings, docs; landing pages, forms, search pages, apps, products, cookie pop-ups; six languages), labelled by
-rule and counted at half weight; all collected by jab.js's own collector. Where links lead to the same place, the label wants one
-of them: text over a picture of the same thing (on a page that is mostly pictures, the picture), else the one it ranked first.
+steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
+home page opens, 1,469 with something already focused) and 1,126 on pages a visitor reaches from those home pages on about 660 of
+them (a search or a link, then a link on the page that opened); and 9,598 on 877 of the most visited sites in the three most common
+desktop windows, each page seen at 1920x945, 1536x730 and 1366x640 with one label carried across by element (1,332 home pages;
+1,689 pages a link opens, such as a model, a repository, a product or an article; 191 search results); each page allowed by its
+robots.txt to anyone, ClaudeBot, anthropic-ai and Claude-User, no adult sites; labelled by Claude from screenshots. And 8,674 steps
+on 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products,
+cookie pop-ups; six languages), labelled by rule and counted at half weight; all collected by jab.js's own collector. Where links
+lead to the same place, the label wants one of them: text over a picture of the same thing (on a page that is mostly pictures, the
+picture), else the one it ranked first.
 One step per line:
 {"split": "train"|"eval", "type": the kind of page ("real" or "live" for a real site), "page": {"path", "title", "desc", "scroll",
-"h1", "query", "prose", "base"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the control wanted
-next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label says nothing
-about, left out of training (optional)}.
+"h1", "query", "prose", "base", "vw", "vh"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the
+control wanted next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label
+says nothing about, left out of training (optional)}.
 Prints, for the "eval" steps, overall and per kind of page, with the trees as written into jab.js and every control ranked as jab.js
 ranks them: whether the first stop is wanted (as training counts it: a pick already visited is not), how often it is a control the
 label says nothing about, how many of the 4 stops are wanted, whether the target is first and whether it is within the 4. --all also
@@ -185,7 +188,7 @@ params = {
 # The generated pages count half: they teach what few real sites show (forms, pop-ups, where the content is), and a model this
 # small has to spend most of itself on the real sites, which are what jab is for.
 weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(train, ids)])
-model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=weight), num_boost_round=70)
+model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=weight), num_boost_round=140)
 
 
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
