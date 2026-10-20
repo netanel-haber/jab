@@ -1,5 +1,6 @@
 # The Chrome Web Store package for a version: the files manifest.json names (itself, its content scripts, its icons) and nothing
-# else, zipped and attached to the version's release; a version with no release yet gets a draft one, for its notes.
+# else, zipped and attached to the version's release; a version with no release yet gets one, published, its notes the pull
+# requests merged since the version before.
 # A push to main that changes manifest.json to a version with no tag yet tags it (v0.7.5, at that commit) and packages it; so
 # does a run by hand with no tag. A tag pushed by hand, or a run by hand with a tag, packages that tag. (This one workflow does
 # both: a tag it pushes itself would not start another.)
@@ -58,5 +59,5 @@ jobs:
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "$ZIP" --clobber
           else
-            gh release create "$TAG" "$ZIP" --draft --title "jab ${TAG#v}" --notes ""
+            gh release create "$TAG" "$ZIP" --title "jab ${TAG#v}" --generate-notes
           fi
