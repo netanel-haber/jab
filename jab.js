@@ -1,6 +1,6 @@
-// jab, in every page (a content script): finds the focusable controls, ranks them with the LightGBM trees at the end of this file
-// (written there by train.py), handles Ctrl+Q and draws the badges. Nothing is cached per page: every press scores the page as it is
-// right now.
+// jab, a smart tab, in every page (a content script): finds the focusable controls, ranks them with the LightGBM trees at the end
+// of this file (written there by train.py), handles Ctrl+Q and draws the badges. Nothing is cached per page: every press scores the
+// page as it is right now.
 {
   const SEL =
     'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],[tabindex]:not([tabindex="-1"]),[role=button],[role=link],[role=textbox],[role=combobox],[role=searchbox],[role=checkbox],[role=tab],[role=menuitem]';
