@@ -391,6 +391,9 @@
                 .fontSize,
             ) || 16,
           scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
+          // the window it is seen in
+          vw: innerWidth,
+          vh: innerHeight,
         };
         const model = JSON.parse(MODEL),
           scores = rank(model, controls, els.indexOf(from), page);
@@ -487,9 +490,9 @@
     return place;
   };
   const isPicture = (c) => c.icon && c.w >= 100 && c.h >= 60; // a link that is a picture (an icon is smaller)
-  // on screen as the trees learned it: within the 1280x900 every training page was captured at. Measuring a window against its own
-  // size instead picked worse on the hand-labelled test pages; that needs training pages captured at other sizes first.
-  const onScreen = (c) => c.w >= 4 && c.h >= 4 && c.y + c.h >= 0 && c.y <= 900 && c.x <= 1280;
+  // on screen: within the window the page is seen in (a page captured before windows were recorded was seen at 1280x900)
+  const windowOf = (page) => [page.vw ?? 1280, page.vh ?? 900];
+  const onScreen = (c, [vw, vh]) => c.w >= 4 && c.h >= 4 && c.y + c.h >= 0 && c.y <= vh && c.x <= vw;
   const isField = (c) =>
     /^(textarea|input (text|search|email|password|tel|url|number)|textbox|searchbox|combobox)$/.test(c.kind); // controls you type into
   const count = (items) => items.reduce((m, k) => m.set(k, (m.get(k) ?? 0) + 1), new Map());
@@ -503,7 +506,8 @@
   const describe = (kinds, all, focus, page) => {
     const controls = all.filter((c) => c.i != focus),
       focused = all.find((c) => c.i == focus);
-    const shown = controls.filter(onScreen),
+    const [vw, vh] = windowOf(page),
+      shown = controls.filter((c) => onScreen(c, [vw, vh])),
       shownY = shown.map((c) => c.y).sort((a, b) => a - b),
       shownRank = rankOf(shown),
       inputsShown = shown.filter((c) => c.kind.startsWith("input")).length;
@@ -557,9 +561,9 @@
       const segments = hrefPath(c).split("/").filter(Boolean),
         inFocusForm = inForm(c, focusForm);
       const f = {
-        // where it is on the page and on screen
-        x: c.x / 1280,
-        y: c.y / 900,
+        // where it is in the window (a share of its width and height) and how big (in pixels, which a window's size does not change)
+        x: c.x / vw,
+        y: c.y / vh,
         w: c.w / 1280,
         h: c.h / 900,
         index: c.i,
