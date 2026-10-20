@@ -5,8 +5,10 @@
 """jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
 Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
-which puts the controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"). The shipped trees: --all. The features are jab.js's own: its describe()
-works them out under Node, so training sees exactly what the browser computes.
+which puts the controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure") and the
+score below which the best guess is more likely wrong than right, where the page's search leads instead ("lead"). The shipped
+trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what the browser
+computes.
 steps.jsonl.gz (not included): 6,012 steps on 1,179 real sites; 2,296 on about 1,030 of the most visited sites (817 as the home
 page opens, 1,479 with something already focused) and 1,128 on pages a visitor reaches from those home pages on 662 of them (a
 search or a link, then a link on the page that opened); each page allowed by its robots.txt to anyone, ClaudeBot, anthropic-ai and
@@ -262,24 +264,26 @@ def predict(M):
     return out
 
 
-def sure(steps_):
-    """The score below which a 3rd or 4th stop is more often unwanted than wanted (counting as training does), over these steps
-    ranked as jab.js ranks them: jab.js leaves such a stop out; the first two always show. None when no score is that low."""
+def cut(steps_, stops):
+    """The score below which a stop at these places (0 the first) is more often unwanted than wanted (counting as training does),
+    over these steps ranked as jab.js ranks them. None when no score is that low."""
     X, ids = rows(steps_, every=True)
     scores = predict(X)
-    stops, start = [], 0
+    found, start = [], 0
     for s, i in zip(steps_, ids):
         part, wanted = scores[start : start + len(i)], relevance(s, i)
         start += len(i)
-        stops += [(part[j], 1 - 2 * (wanted[j] > 0), 1 if s["type"] in ("real", "live") else 0.5)
-                  for j in np.argsort(-part, kind="stable")[2:4]]
-    stops.sort(key=lambda t: t[0])
-    gain = np.cumsum([sign * w for _, sign, w in stops])  # hiding every stop up to this one: the unwanted hidden less the wanted
-    k = int(gain.argmax()) if stops else 0
-    return int(stops[k][0]) + 1 if stops and gain[k] > 0 else None
+        found += [(part[j], 1 - 2 * (wanted[j] > 0), 1 if s["type"] in ("real", "live") else 0.5)
+                  for j in np.argsort(-part, kind="stable")[stops]]
+    found.sort(key=lambda t: t[0])
+    gain = np.cumsum([sign * w for _, sign, w in found])  # hiding every stop up to this one: the unwanted hidden less the wanted
+    k = int(gain.argmax()) if found else 0
+    return int(found[k][0]) + 1 if found and gain[k] > 0 else None
 
 
-ranker["sure"] = sure(train)
+# a 3rd or 4th stop shows only from "sure"; below "lead" the first stop is more likely unwanted, and jab puts the page's search first
+ranker["sure"] = cut(train, slice(2, 4))
+ranker["lead"] = cut(train, slice(0, 1))
 
 
 def report(name, steps_):
@@ -317,4 +321,4 @@ source, found = re.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_jso
 assert found == 1, f"{jab} has no MODEL string"
 jab.write_text(source, encoding="utf-8")
 print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab};", end=" ")
-print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}")
+print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}, the search leads below {ranker['lead']}")

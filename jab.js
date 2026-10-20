@@ -58,12 +58,31 @@
   // a field for searching: by what it is (type=search, a searchbox, in a search landmark), its name, or what it says it is for
   const SEARCH =
     /search|suche|busca|búsqueda|recherch|cerca|pesquis|zoek|szukaj|hledat|keres|arama|поиск|найти|пошук|חיפוש|חפש|بحث|جستجو|検索|搜索|搜尋|검색|tìm|cari|ค้นหา|खोज/i;
+  // a link or button that opens the site's search counts too, if it says no more than that (a few words) or goes to a search page
   const isSearch = (e) =>
-    e.matches(`${TYPED},[role=searchbox],[role=combobox]`) &&
-    (e.matches("input[type=search],[role=searchbox]") ||
-      !!near(e, "[role=search],search") ||
-      /^(q|query|s|k|keyword|keywords)$/.test(e.name ?? "") ||
-      SEARCH.test(`${label(e)} ${e.name ?? ""} ${e.id} ${e.form?.getAttribute("action") ?? ""}`));
+    (e.matches(`${TYPED},[role=searchbox],[role=combobox]`) &&
+      (e.matches("input[type=search],[role=searchbox]") ||
+        !!near(e, "[role=search],search") ||
+        /^(q|query|s|k|keyword|keywords)$/.test(e.name ?? "") ||
+        SEARCH.test(`${label(e)} ${e.name ?? ""} ${e.id} ${e.form?.getAttribute("action") ?? ""}`))) ||
+    (e.matches("a[href],button,[role=button]") &&
+      label(e).trim().split(/\s+/).length <= 3 &&
+      SEARCH.test(`${label(e)} ${e instanceof HTMLAnchorElement ? new URL(e.href).pathname : ""}`));
+  // an ad, never a pick: what sits in an ad slot (by the ids and classes the ad systems give them) and frames or links that go to an
+  // ad network
+  const AD_SLOT =
+    '[id^="google_ads_"],[id^="div-gpt-ad"],[id^="aswift_"],ins.adsbygoogle,[data-google-query-id],[data-ad-slot],[id^="taboola"],.OUTBRAIN';
+  const AD_HOST =
+    /(^|\.)(doubleclick\.net|googlesyndication\.com|googleadservices\.com|adnxs\.com|amazon-adsystem\.com|taboola\.com|outbrain\.com|criteo\.(com|net)|pubmatic\.com|rubiconproject\.com|adform\.net|smartadserver\.com|teads\.tv|moatads\.com|media\.net|adsrvr\.org|openx\.net)$/;
+  const isAd = (e) => {
+    if (near(e, AD_SLOT)) return true;
+    try {
+      const to = e instanceof HTMLIFrameElement ? e.src : e instanceof HTMLAnchorElement ? e.href : "";
+      return !!to && AD_HOST.test(new URL(to).hostname);
+    } catch {
+      return false;
+    }
+  };
   const inView = (r) => r.bottom >= 0 && r.top <= innerHeight && r.right >= 0 && r.left <= innerWidth;
   const q = (v) => Math.floor(Math.round(v) / 10 + 0.5) * 10; // viewport pixels, to the nearest 10
   // every control, including those inside open shadow roots, in page order
@@ -414,7 +433,7 @@
           taken = new Set();
         const order = scores
           .map((v, i) => [v, els[i], controls[i]])
-          .filter(([v, el]) => v !== null && !reloads(el))
+          .filter(([v, el]) => v !== null && !reloads(el) && !isAd(el))
           .sort((a, b) => b[0] - a[0])
           .filter(([, , c]) => !taken.has(place.get(c.i)) && taken.add(place.get(c.i)));
         // the best two, and the 3rd and 4th when they are more likely wanted than not (the score train.py found for that)
@@ -422,11 +441,20 @@
           .slice(0, 4)
           .filter(([v], k) => k < 2 || v >= (model.sure ?? -Infinity))
           .map(([, el]) => el);
-        // and the page's search field, unless you are typing into something: the one in the page's content (a filter, a
-        // section's own search) before the site's, as the last pick
+        // and the page's search, unless you are typing into something: a field before a button or link that opens one, the one in
+        // the page's content (a filter, a section's own search) before the site's. It is the last pick, or the first when the best
+        // guess is more likely unwanted than wanted (below the score train.py found for that)
         const searches = from?.matches(`${TYPED},${EDITABLE}`) ? [] : order.filter(([, el]) => isSearch(el));
-        const search = (searches.find(([, , c]) => !c.chrome) ?? searches[0])?.[1];
-        if (search && !best.includes(search)) best.splice(Math.min(best.length, 3), 1, search);
+        const field = ([, , c]) => isField(c),
+          search = (searches.find((s) => field(s) && !s[2].chrome) ??
+            searches.find(field) ??
+            searches.find(([, , c]) => !c.chrome) ??
+            searches[0])?.[1];
+        if (search && order[0][0] < (model.lead ?? -Infinity)) {
+          if (best.includes(search)) best.splice(best.indexOf(search), 1);
+          best.unshift(search);
+          best.splice(4);
+        } else if (search && !best.includes(search)) best.splice(Math.min(best.length, 3), 1, search);
         if (!best.length) return note("jab found nothing to jump to here.");
         // the next 20 stand in for a pick that turns out not to take the focus
         const rest = order
