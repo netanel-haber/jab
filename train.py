@@ -1,10 +1,11 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["numpy", "scipy", "lightgbm"]
+# dependencies = ["numpy", "scipy", "lightgbm", "numba"]
 # ///
 """jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
-Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
+Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
+corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string),
 which puts the controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure") and the
 score below which the best guess is more likely wrong than right, where the page's search leads instead ("lead"). The shipped
 trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what the browser
@@ -40,6 +41,7 @@ import subprocess
 import tempfile
 
 import lightgbm as lgb
+import numba
 import numpy as np
 import scipy.sparse as sp
 
@@ -191,6 +193,75 @@ weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else
 model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=weight), num_boost_round=140)
 
 
+@numba.njit(cache=True)
+def lambdarank(score, label, start, weight, gain):
+    """LambdaRank's gradients and hessians of every row as LightGBM works them out for these params (lambdarank_objective.hpp: the
+    pairs with at least one control among the 30 ranked first, normalized), each step's controls being start[q]:start[q + 1]."""
+    grad, hess = np.zeros(len(score)), np.zeros(len(score))
+    for q in range(len(start) - 1):
+        a, n = start[q], start[q + 1] - start[q]
+        s, lab = score[a : a + n], label[a : a + n]
+        order = np.argsort(-s, kind="mergesort")
+        best = np.sort(lab)[::-1]
+        max_dcg = 0.0
+        for k in range(min(n, 30)):
+            max_dcg += gain[best[k]] / np.log2(2.0 + k)
+        if n < 2 or max_dcg == 0:
+            continue
+        g, h, total = np.zeros(n), np.zeros(n), 0.0
+        for i in range(min(n - 1, 30)):
+            for j in range(i + 1, n):
+                hi, lo = order[i], order[j]
+                if lab[hi] == lab[lo]:
+                    continue
+                if lab[hi] < lab[lo]:
+                    hi, lo = lo, hi
+                delta = (gain[lab[hi]] - gain[lab[lo]]) * abs(1 / np.log2(2.0 + i) - 1 / np.log2(2.0 + j)) / max_dcg
+                ds = s[hi] - s[lo]
+                if s[order[0]] != s[order[n - 1]]:
+                    delta /= 0.01 + abs(ds)
+                p = 1 / (1 + np.exp(ds))
+                g[lo] += p * delta
+                g[hi] -= p * delta
+                h[lo] += p * (1 - p) * delta
+                h[hi] += p * (1 - p) * delta
+                total += 2 * p * delta
+        norm = np.log2(1 + total) / total if total > 0 else 1.0
+        grad[a : a + n], hess[a : a + n] = g * norm * weight[a : a + n], h * norm * weight[a : a + n]
+    return grad, hess
+
+
+# Then every leaf again, the splits as they are (fully corrective, as in Regularized Greedy Forest): boosting set each tree's leaves
+# once, before the trees after it were grown. Three passes go through the trees in turn and move each tree's leaves halfway to
+# where LambdaRank wants them, every other tree in place (a damped Newton step). The same splits, ranking better; the leaves take
+# a few more digits.
+def nodes(node):
+    """a tree's nodes, as LightGBM dumps them"""
+    yield node
+    if "leaf_index" not in node:
+        yield from nodes(node["left_child"])
+        yield from nodes(node["right_child"])
+
+
+forest = model.dump_model()["tree_info"]
+# every training row's leaf, in every tree (in blocks of rows: LightGBM hands them back as 8-byte floats)
+leaf_of = np.vstack([model.predict(X[a : a + 100000], pred_leaf=True).astype(np.int16) for a in range(0, X.shape[0], 100000)])
+leaves = [[node for node in nodes(info["tree_structure"]) if "leaf_index" in node] for info in forest]
+values = [np.array([node["leaf_value"] for node in sorted(t, key=lambda node: node["leaf_index"])]) for t in leaves]
+start = np.concatenate([[0], np.cumsum([len(i) for i in ids])])
+label, label_gain = y.astype(np.int64), np.array([2.0**l - 1 for l in range(4)])  # LightGBM's default label_gain
+score = sum(v[leaf_of[:, k]] for k, v in enumerate(values))
+for _ in range(3):
+    for k, v in enumerate(values):
+        g, h = lambdarank(score, label, start, weight, label_gain)
+        step = -0.5 * np.bincount(leaf_of[:, k], g, minlength=len(v)) / (np.bincount(leaf_of[:, k], h, minlength=len(v)) + 1)
+        v += step
+        score += step[leaf_of[:, k]]
+for t, v in zip(leaves, values):
+    for node in t:
+        node["leaf_value"] = float(v[node["leaf_index"]])
+
+
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
 # other, the shortest decimal that still splits the training values the same way and stays near the middle of the gap between them,
 # where LightGBM put it (0.35, not 0.35000000000000003).
@@ -234,7 +305,7 @@ def columns(t):
         yield from columns(t[3])
 
 
-trees = [tree(info["tree_structure"]) for info in model.dump_model()["tree_info"]]
+trees = [tree(info["tree_structure"]) for info in forest]
 # only the columns some tree asks about go in the model, numbered in order: those features, then those words
 used = sorted({j for t in trees for j in columns(t)})
 column = {j: k for k, j in enumerate(used)}
