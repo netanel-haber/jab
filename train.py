@@ -6,9 +6,8 @@
 
 Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
 corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string), which puts the
-controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure") and the score the least
-sure 2% of best guesses fall below, where the page's search leads instead ("lead"), both found on the held-out steps.
-The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
+controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"), found on the held-out
+steps. The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
 the browser computes.
 steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
 home page opens, 1,469 with something already focused) and 1,126 on pages a visitor reaches from those home pages on about 660 of
@@ -28,7 +27,7 @@ says nothing about, left out of training (optional)}.
 Prints, for the "eval" steps, overall and per kind of page, with the trees as written into jab.js and every control ranked as jab.js
 ranks them: whether the first stop is wanted (as training counts it: a pick already visited is not), how often it is a control the
 label says nothing about, how many of the 4 stops are wanted, whether the target is first and whether it is within the 4. --all also
-trains on them, for the file you ship (the cuts still come from trees grown without them)."""
+trains on them, for the file you ship (the cut still comes from trees grown without them)."""
 
 import argparse
 import collections
@@ -267,10 +266,10 @@ def scored(model, steps_):
     return model.predict(X, raw_score=True) * 100, ids
 
 
-# The cuts ("sure" and "lead", below) are found on the held-out steps, as trees that did not learn from them rank them: trees are
-# surer of the steps they learned than of a page they have not seen. Those are the trees grown on the training steps; with --all,
-# the shipped trees are grown on every step after them.
-assert held, 'the cuts are found on the held-out steps ("split": "eval")'
+# The cut ("sure", below) is found on the held-out steps, as trees that did not learn from them rank them: trees are surer of the
+# steps they learned than of a page they have not seen. Those are the trees grown on the training steps; with --all, the shipped
+# trees are grown on every step after them.
+assert held, 'the cut is found on the held-out steps ("split": "eval")'
 model, X = grow([s for s in steps if s["split"] == "train"])
 held_scores, held_ids = scored(model, held)
 if args.all:
@@ -369,11 +368,8 @@ def cut(steps_, ids, scores, stops):
     return math.floor(found[k][0]) + 1 if found and gain[k] > 0 else None
 
 
-# a 3rd or 4th stop shows only from "sure"; below "lead", where the best guess of the least sure 2% of the held-out steps scores, jab
-# puts the page's search first
+# a 3rd or 4th stop shows only from "sure"
 ranker["sure"] = cut(held, held_ids, held_scores, slice(2, 4))
-starts = np.cumsum([0, *map(len, held_ids)])
-ranker["lead"] = math.ceil(np.quantile([held_scores[a:b].max() for a, b in zip(starts, starts[1:]) if b > a], 0.02))
 
 
 def report(name, steps_):
@@ -410,4 +406,4 @@ source, found = re.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_jso
 assert found == 1, f"{jab} has no MODEL string"
 jab.write_text(source, encoding="utf-8")
 print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab};", end=" ")
-print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}, the search leads below {ranker['lead']}")
+print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}")
