@@ -238,15 +238,15 @@
   });
   const root = host.attachShadow({ mode: "closed" }),
     sheet = new CSSStyleSheet();
-  host.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
+  host.style.cssText = "all: initial; direction: ltr; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
   sheet.replaceSync(`
     .badge { position: fixed; display: flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 3px; box-sizing: border-box; border-radius: 9px; background: #2b6f4b; color: #fff; opacity: .85; font: 700 11px/18px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
-    .badge.now { background: #00e676; color: #00210e; outline: 1px solid #00210e; box-shadow: 0 0 0 4px rgba(0, 230, 118, .55), 0 2px 6px rgba(0, 0, 0, .4); transform: scale(1.15); z-index: 1; }
+    .badge.now { background: #00e676; color: #00210e; outline: 1px solid #00210e; box-shadow: 0 0 0 4px rgba(0, 230, 118, .55), 0 2px 6px rgba(0, 0, 0, .4); transform: scale(1.15); z-index: 1; height: 22px; padding: 0 5px 0 4px; border-radius: 11px; }
     .badge.off { opacity: .65; }
     .badge[hidden] { display: none; }
     .arrow { display: inline-block; margin-left: 2px; }
     .into { transform: rotate(15deg); }
-    .key { display: inline-block; margin-right: 4px; padding: 0 4px; height: 11px; border: 1px solid #a7b0ac; border-bottom: 2px solid #7d8783; border-radius: 3px; background: linear-gradient(#fff, #dfe4e2); color: #1d2b24; font: 700 9px/11px system-ui, sans-serif; box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(0, 0, 0, .4); }
+    .key { display: inline-block; margin-right: 6px; padding: 0 5px; height: 14px; border: 1px solid #a7b0ac; border-bottom: 2px solid #7d8783; border-radius: 3px; background: linear-gradient(#fff, #dfe4e2); color: #1d2b24; font: 700 9px/14px system-ui, sans-serif; box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(0, 0, 0, .4); }
     .note { position: fixed; right: 16px; bottom: 16px; max-width: 280px; padding: 6px 10px; border-radius: 6px; background: #1f4f35; color: #fff; font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 2px 6px rgba(0, 0, 0, .3); }`);
   root.adoptedStyleSheets = [sheet];
   const draw = (className, textContent) => {
