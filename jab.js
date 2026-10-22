@@ -355,17 +355,33 @@
   );
 
   // A press of the shortcut, from background.js. The browser keeps the shortcut's keys from the page, and sends a press as they go
-  // down and, while they are held, some 25 a second: a held press counts every half second. A key coming up on the page is the keys
-  // let go. Every press, counted or not, gives the session another 10 s.
+  // down and, while they are held, some 25 a second after the keyboard's repeat delay: held, they move on every half second. A key
+  // coming up on the page is the keys let go. The press that put jab on the page may have been let go before jab could see it, so
+  // the press after it waits: for the keys to come up (it was a press of its own) or for another press (the keys are held). Every
+  // press, counted or not, gives the session another 10 s.
   let counted = 0,
     released = true,
-    first = true;
-  addEventListener("keyup", () => (released = true), true);
+    unsure = false,
+    waiting = false;
+  addEventListener(
+    "keyup",
+    () => {
+      released = true;
+      unsure = false;
+      if (waiting) (waiting = false), go();
+    },
+    true,
+  );
   chrome.runtime.onMessage.addListener(() => {
     if (ses) touch();
+    if (waiting) return void (waiting = unsure = false); // held: from here on, every half second
+    if (unsure) return void (waiting = true);
     if (!released && performance.now() - counted < 500) return;
-    released = first; // the press that put jab here: its keys may have come up before jab could see it, so the next press counts
-    first = false;
+    unsure = !counted; // the press that put jab here
+    go();
+  });
+  const go = () => {
+    released = false;
     counted = performance.now();
     if (ses?.els.every((el) => el.isConnected)) return step();
     end(); // no session, or a pick left the page (re-rendered): start over
@@ -446,7 +462,7 @@
     } catch (error) {
       note(`jab could not answer: ${error.message}`);
     }
-  });
+  };
 
   // The ranker: the LightGBM trees in MODEL (below, made by train.py) score every control of the page from cheap features (where it is,
   // what it is, how it looks, what is on top, what reads as content, its words), no neural network.
