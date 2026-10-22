@@ -12,7 +12,7 @@
 
 The ranker is lean: Just 18KB, LightGBM (2016) trees running in-browser CPU-only in about 2ms. No network requests, nothing leaves the browser ([privacy](https://jab.run/PRIVACY.html)).
 
-- The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control (its badge reads 1 ↵), as well as up to 3 other picks with small numbered badges: fewer when jab isn't sure of them, and the page's search box among them when they are all list items or deep links, as a way on to anything else. Nothing is focused yet, so nothing pops open.
+- The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control (its badge reads <kbd>Enter</kbd> 1↘), as well as up to 3 other picks with small numbered badges, each with an arrow to its control: fewer when jab isn't sure of them, and the page's search box among them when they are all list items or deep links, as a way on to anything else. Nothing is focused yet, so nothing pops open.
 - <kbd>Enter</kbd>: uses the highlighted control. A button is pressed, a link followed, a field focused (a date picker opens). Or just type: a highlighted text field gets the focus and what you type.
 - Tap <kbd>Ctrl</kbd>+<kbd>Q</kbd> again: the focus moves to the next pick.
 - Hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press <kbd>1</kbd> to <kbd>4</kbd>: Straight to that one.
