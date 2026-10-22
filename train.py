@@ -1,14 +1,14 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["numpy", "scipy", "lightgbm"]
+# dependencies = ["numpy", "scipy", "lightgbm", "numba"]
 # ///
 """jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
 
-Trains a LightGBM LambdaRank ranker over every control of a page and writes its trees into jab.js (as JSON, in its MODEL string),
-which puts the controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure") and the
-score below which the best guess is more likely wrong than right, where the page's search leads instead ("lead"). The shipped
-trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what the browser
-computes.
+Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
+corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string), which puts the
+controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"), found on the held-out
+steps. The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
+the browser computes.
 steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
 home page opens, 1,469 with something already focused) and 1,126 on pages a visitor reaches from those home pages on about 660 of
 them (a search or a link, then a link on the page that opened); and 9,598 on 877 of the most visited sites in the three most common
@@ -27,7 +27,7 @@ says nothing about, left out of training (optional)}.
 Prints, for the "eval" steps, overall and per kind of page, with the trees as written into jab.js and every control ranked as jab.js
 ranks them: whether the first stop is wanted (as training counts it: a pick already visited is not), how often it is a control the
 label says nothing about, how many of the 4 stops are wanted, whether the target is first and whether it is within the 4. --all also
-trains on them, for the file you ship."""
+trains on them, for the file you ship (the cut still comes from trees grown without them)."""
 
 import argparse
 import collections
@@ -40,6 +40,7 @@ import subprocess
 import tempfile
 
 import lightgbm as lgb
+import numba
 import numpy as np
 import scipy.sparse as sp
 
@@ -170,8 +171,6 @@ def relevance(s, ids):
     return [3 if i == s["target"] else 2 if i in ahead else 1 if i in s["ok"] else 0 for i in ids]
 
 
-X, ids = rows(train)
-y = np.concatenate([relevance(s, i) for s, i in zip(train, ids)])
 params = {
     "objective": "lambdarank",
     "learning_rate": 0.2,
@@ -185,10 +184,97 @@ params = {
     "force_row_wise": True,
     "verbose": -1,
 }
-# The generated pages count half: they teach what few real sites show (forms, pop-ups, where the content is), and a model this
-# small has to spend most of itself on the real sites, which are what jab is for.
-weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(train, ids)])
-model = lgb.train(params, lgb.Dataset(X, y, group=[len(i) for i in ids], weight=weight), num_boost_round=140)
+
+
+@numba.njit
+def lambdarank(score, label, start, weight, gain):
+    """LambdaRank's gradients and hessians of every row as LightGBM works them out for these params (lambdarank_objective.hpp: the
+    pairs with at least one control among the 30 ranked first, normalized), each step's controls being start[q]:start[q + 1]."""
+    grad, hess = np.zeros(len(score)), np.zeros(len(score))
+    for q in range(len(start) - 1):
+        a, n = start[q], start[q + 1] - start[q]
+        s, lab = score[a : a + n], label[a : a + n]
+        order = np.argsort(-s, kind="mergesort")
+        best = np.sort(lab)[::-1]
+        max_dcg = 0.0
+        for k in range(min(n, 30)):
+            max_dcg += gain[best[k]] / np.log2(2.0 + k)
+        if n < 2 or max_dcg == 0:
+            continue
+        g, h, total = np.zeros(n), np.zeros(n), 0.0
+        for i in range(min(n - 1, 30)):
+            for j in range(i + 1, n):
+                hi, lo = order[i], order[j]
+                if lab[hi] == lab[lo]:
+                    continue
+                if lab[hi] < lab[lo]:
+                    hi, lo = lo, hi
+                delta = (gain[lab[hi]] - gain[lab[lo]]) * abs(1 / np.log2(2.0 + i) - 1 / np.log2(2.0 + j)) / max_dcg
+                ds = s[hi] - s[lo]
+                if s[order[0]] != s[order[n - 1]]:
+                    delta /= 0.01 + abs(ds)
+                p = 1 / (1 + np.exp(ds))
+                g[lo] += p * delta
+                g[hi] -= p * delta
+                h[lo] += p * (1 - p) * delta
+                h[hi] += p * (1 - p) * delta
+                total += 2 * p * delta
+        norm = np.log2(1 + total) / total if total > 0 else 1.0
+        grad[a : a + n], hess[a : a + n] = g * norm * weight[a : a + n], h * norm * weight[a : a + n]
+    return grad, hess
+
+
+def refit(model, X, y, groups, weight):
+    """Every leaf again, the splits as they are (fully corrective, as in Regularized Greedy Forest): boosting set each tree's leaves
+    once, before the trees after it were grown. Three passes go through the trees in turn and move each tree's leaves halfway to
+    where LambdaRank wants them, every other tree in place (a damped Newton step). The same splits, ranking better; the leaves take
+    a few more digits."""
+    # every row's leaf, in every tree (in blocks of rows: LightGBM hands them back as 8-byte floats)
+    leaf_of = np.vstack([model.predict(X[a : a + 100000], pred_leaf=True).astype(np.int16) for a in range(0, X.shape[0], 100000)])
+    info = model.dump_model()["tree_info"]
+    values = [np.array([model.get_leaf_output(k, j) for j in range(t["num_leaves"])]) for k, t in enumerate(info)]
+    start = np.concatenate([[0], np.cumsum(groups)])
+    label, label_gain = y.astype(np.int64), np.array([2.0**l - 1 for l in range(4)])  # LightGBM's default label_gain
+    score = sum(v[leaf_of[:, k]] for k, v in enumerate(values))
+    for _ in range(3):
+        for k, v in enumerate(values):
+            g, h = lambdarank(score, label, start, weight, label_gain)
+            step = -0.5 * np.bincount(leaf_of[:, k], g, minlength=len(v)) / (np.bincount(leaf_of[:, k], h, minlength=len(v)) + 1)
+            v += step
+            score += step[leaf_of[:, k]]
+    for k, v in enumerate(values):
+        for j, value in enumerate(v):
+            model.set_leaf_output(k, j, value)
+
+
+def grow(steps_):
+    """LightGBM's trees for these steps, their leaves refit together; and the rows they were grown on"""
+    X, ids = rows(steps_)
+    y = np.concatenate([relevance(s, i) for s, i in zip(steps_, ids)])
+    # The generated pages count half: they teach what few real sites show (forms, pop-ups, where the content is), and a model this
+    # small has to spend most of itself on the real sites, which are what jab is for.
+    weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(steps_, ids)])
+    groups = [len(i) for i in ids]
+    model = lgb.train(params, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=140)
+    refit(model, X, y, groups, weight)
+    return model, X
+
+
+def scored(model, steps_):
+    """every control of these steps, as jab.js ranks them all, with the model's score for it (in jab.js's units); and their ids"""
+    X, ids = rows(steps_, every=True)
+    return model.predict(X, raw_score=True) * 100, ids
+
+
+# The cut ("sure", below) is found on the held-out steps, as trees that did not learn from them rank them: trees are surer of the
+# steps they learned than of a page they have not seen. Those are the trees grown on the training steps; with --all, the shipped
+# trees are grown on every step after them.
+assert held, 'the cut is found on the held-out steps ("split": "eval")'
+model, X = grow([s for s in steps if s["split"] == "train"])
+held_scores, held_ids = scored(model, held)
+if args.all:
+    del model, X  # their memory, before the shipped trees take theirs
+    model, X = grow(train)
 
 
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
@@ -267,11 +353,9 @@ def predict(M):
     return out
 
 
-def cut(steps_, stops):
+def cut(steps_, ids, scores, stops):
     """The score below which a stop at these places (0 the first) is more often unwanted than wanted (counting as training does),
-    over these steps ranked as jab.js ranks them. None when no score is that low."""
-    X, ids = rows(steps_, every=True)
-    scores = predict(X)
+    over these steps, every control with its score. None when no score is that low."""
     found, start = [], 0
     for s, i in zip(steps_, ids):
         part, wanted = scores[start : start + len(i)], relevance(s, i)
@@ -281,12 +365,11 @@ def cut(steps_, stops):
     found.sort(key=lambda t: t[0])
     gain = np.cumsum([sign * w for _, sign, w in found])  # hiding every stop up to this one: the unwanted hidden less the wanted
     k = int(gain.argmax()) if found else 0
-    return int(found[k][0]) + 1 if found and gain[k] > 0 else None
+    return math.floor(found[k][0]) + 1 if found and gain[k] > 0 else None
 
 
-# a 3rd or 4th stop shows only from "sure"; below "lead" the first stop is more likely unwanted, and jab puts the page's search first
-ranker["sure"] = cut(train, slice(2, 4))
-ranker["lead"] = cut(train, slice(0, 1))
+# a 3rd or 4th stop shows only from "sure"
+ranker["sure"] = cut(held, held_ids, held_scores, slice(2, 4))
 
 
 def report(name, steps_):
@@ -312,8 +395,7 @@ def report(name, steps_):
         print(f"  stops wanted {wanted / n:.3f}  top-1 {top1 / n:.3f}  top-4 {top4 / n:.3f}  ({n:.0f} steps)")
 
 
-if held:
-    report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
+report(f"{len(held)} held-out steps{' (also trained on)' if args.all else ''}", held)
 
 # The model goes into jab.js, as the JSON inside its MODEL string. That string is in single quotes and taken as is, so the JSON
 # must hold no single quote and no backslash.
@@ -324,4 +406,4 @@ source, found = re.subn(r"(const MODEL =\s*')[^']*'", lambda m: m[1] + model_jso
 assert found == 1, f"{jab} has no MODEL string"
 jab.write_text(source, encoding="utf-8")
 print(f"{len(trees)} trees, {len(ranker['features'])} features and {len(ranker['words'])} words written into {jab};", end=" ")
-print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}, the search leads below {ranker['lead']}")
+print(f"a 3rd or 4th stop shows from a score of {ranker['sure']}")
