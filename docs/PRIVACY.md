@@ -2,11 +2,11 @@
 
 Last updated: October 14, 2026
 
-jab is a smart tab: a browser extension that highlights the control you most likely want next when you press Ctrl+Q, and uses it when you press Enter.
+jab is a smart tab: a browser extension that highlights the control you most likely want next when you press Ctrl+., and uses it when you press Enter.
 
 ## What jab reads
 
-When you press Ctrl+Q, jab reads the page you are on, in your browser:
+When you press Ctrl+., jab reads the page you are on, in your browser:
 
 - the focusable controls (links, buttons, fields): their kind, label, link address, position, size, look, and the text around them;
 - whether a field is filled in (not what is typed in it);
@@ -22,7 +22,7 @@ It ranks the controls on your own device, with a model that ships inside the ext
 
 ## Permissions
 
-jab runs on every page (`<all_urls>`) so that Ctrl+Q works wherever you are. It asks for no other permissions.
+jab runs on every page (`<all_urls>`) so that Ctrl+. works wherever you are. It asks for no other permissions.
 
 ## Contact
 

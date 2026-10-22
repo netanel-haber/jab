@@ -1,6 +1,6 @@
 <img src="https://jab.run/icon.png" alt="jab" height="64">
 
-**Smart Tab.** Pressing <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control/field that the ranker assumes you want, based on the current page, focused elements, etc. <kbd>Enter</kbd> uses it.
+**Smart Tab.** Pressing <kbd>Ctrl</kbd>+<kbd>.</kbd> will highlight the control/field that the ranker assumes you want, based on the current page, focused elements, etc. <kbd>Enter</kbd> uses it.
 
 **[Add to Chrome](https://chromewebstore.google.com/detail/jab/dfnikmnfgjnbmhfnpeigignlgpkggbji)**
 
@@ -8,16 +8,15 @@
 
 > We have `tab` at home.
 
-<img src="https://jab.run/demo.gif" width="840" alt="jab on a news page: Ctrl+Q highlights the top story, and Enter opens it.">
+<img src="https://jab.run/demo.gif" width="840" alt="jab on a news page: Ctrl+. highlights the top story, and Enter opens it.">
 
 The ranker is lean: Just 18KB, LightGBM (2016) trees running in-browser CPU-only in about 2ms. No network requests, nothing leaves the browser ([privacy](https://jab.run/PRIVACY.html)).
 
-- The first <kbd>Ctrl</kbd>+<kbd>Q</kbd> will highlight the control (its badge reads <kbd>Enter</kbd> 1↘), as well as up to 3 other picks with small numbered badges, each with an arrow to its control: fewer when jab isn't sure of them, and the page's search box among them when they are all list items or deep links, as a way on to anything else. Nothing is focused yet, so nothing pops open.
+- The first <kbd>Ctrl</kbd>+<kbd>.</kbd> will highlight the control (its badge reads <kbd>Enter</kbd> 1↘), as well as up to 3 other picks with small numbered badges, each with an arrow to its control: fewer when jab isn't sure of them, and the page's search box among them when they are all list items or deep links, as a way on to anything else. Nothing is focused yet, so nothing pops open.
 - <kbd>Enter</kbd>: uses the highlighted control. A button is pressed, a link followed, a field focused (a date picker opens). Or just type: a highlighted text field gets the focus and what you type.
-- Tap <kbd>Ctrl</kbd>+<kbd>Q</kbd> again: the focus moves to the next pick.
-- Hold <kbd>Ctrl</kbd>+<kbd>Q</kbd> and press <kbd>1</kbd> to <kbd>4</kbd>: Straight to that one.
+- <kbd>Ctrl</kbd>+<kbd>.</kbd> again: the focus moves to the next pick.
 
-Anything else you do (<kbd>Esc</kbd>, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>Q</kbd> will be a new session.
+Anything else you do (<kbd>Esc</kbd>, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>.</kbd> will be a new session.
 
 Open source (MIT): [github.com/netanel-haber/jab](https://github.com/netanel-haber/jab)
 

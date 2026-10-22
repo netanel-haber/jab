@@ -1,5 +1,5 @@
 // jab, a smart tab, in every page (a content script): finds the focusable controls, ranks them with the LightGBM trees at the end
-// of this file (written there by train.py), handles Ctrl+Q and draws the badges. Nothing is cached per page: every press scores the
+// of this file (written there by train.py), handles Ctrl+. and draws the badges. Nothing is cached per page: every press scores the
 // page as it is right now.
 {
   const SEL =
@@ -255,9 +255,9 @@
   };
   const note = (message) => setTimeout((n) => n.remove(), 4000, draw("note", message));
 
-  // A session: our 2 to 4 picks and their badges. The first Ctrl+Q only lights pick 1 (lit): nothing is focused, so nothing opens,
-  // and Enter uses it. A tap of Ctrl+Q, or Ctrl+Q and a digit, is you choosing: the focus goes to that pick, and from there on your
-  // keys are the page's again. Anything else you do ends the session, and so do 10 s without a press.
+  // A session: our 2 to 4 picks and their badges. The first Ctrl+. only lights pick 1 (lit): nothing is focused, so nothing opens,
+  // and Enter uses it. Another Ctrl+. is you choosing: the focus goes to the next pick, and from there on your keys are the page's
+  // again. Anything else you do ends the session, and so do 10 s without a press.
   let ses = null,
     timer;
   // each badge sits on the top-left corner of its control with an arrow into it, or at the screen edge with an arrow the way to it
@@ -300,19 +300,14 @@
   // type into: a button is pressed, a link followed, a box ticked, a read-only field (a date picker, mostly) opened.
   const use = (el, press) => {
     end();
-    if (!el.isConnected) return note("That control has left the page: press Ctrl+Q again.");
+    if (!el.isConnected) return note("That control has left the page: press Ctrl+. again.");
     el.focus();
     if (press && !typable(el)) el.click();
     else if (active() != el) note("jab could not move the focus here: the page keeps it where it is.");
   };
-  // Ctrl+Q types nothing and Chrome does not use it. While Ctrl+Q is held down, a digit 1-4 puts the focus on that pick; any other
-  // time Ctrl+digit is left to Chrome. Inside a session, Ctrl+Q moves the focus to the next pick only on a tap (let go within 0.4 s,
-  // no digit): holding it is for choosing.
-  let held = false,
-    tapped = 0;
-  const ctrl = (e) => e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
-  const isPress = (e) => e.code == "KeyQ" && ctrl(e);
-  const digit = (e) => (held && ctrl(e) && /^Digit[1-4]$/.test(e.code) ? Number(e.code[5]) : 0);
+  // Ctrl+. (the key by where it is, whatever it types on the layout) types nothing, no browser uses it on any system, and a page's
+  // access keys, which take Alt or Option, never can. Inside a session, Ctrl+. moves the focus to the next pick.
+  const isPress = (e) => e.code == "Period" && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
   // Focus pick i. A pick that does not take the focus (the page has since hidden it, or a pop-up keeps the focus to itself)
   // is replaced by the next control in the ranking, or dropped when the ranking runs out; with no pick left the session ends.
   const land = (i) => {
@@ -337,24 +332,13 @@
     if (next == 0) ses.badges[0].animate([{ transform: "scale(1.7)" }, { transform: "none" }], 450);
     land(next);
   };
-  addEventListener(
-    "keyup",
-    (e) => {
-      if (e.key != "Control" && e.code != "KeyQ") return;
-      if (tapped && performance.now() - tapped < 400 && ses) step();
-      held = false;
-      tapped = 0;
-    },
-    true,
-  );
-  addEventListener("blur", () => (held = tapped = 0));
   // A key while pick 1 is lit: Enter uses it, a key that types a character goes into it when it is a field (the focus moves there
   // first; the page's own shortcuts never see that key), Escape only ends the session. Any other key, and any key once the focus is
   // on a pick, ends the session and does what it always does, where the focus is.
   addEventListener(
     "keydown",
     (e) => {
-      if (!ses || isPress(e) || digit(e) || ["Control", "Shift", "Alt", "Meta", "AltGraph"].includes(e.key)) return;
+      if (!ses || isPress(e) || ["Control", "Shift", "Alt", "Meta", "AltGraph"].includes(e.key)) return;
       if (!ses.lit) return end();
       const el = ses.els[0],
         plain = !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -376,23 +360,12 @@
   addEventListener(
     "keydown",
     (e) => {
-      const n = digit(e);
-      if (!isPress(e) && !n) return;
-      if (!chrome.runtime?.id) return note("jab was reloaded: refresh this page to use it."); // a stale copy of this script leaves Ctrl+Q alone
+      if (!isPress(e)) return;
+      if (!chrome.runtime?.id) return note("jab was reloaded: refresh this page to use it."); // a stale copy of this script leaves Ctrl+. alone
       e.preventDefault();
       e.stopPropagation();
       if (e.repeat) return; // holding the keys down is one press
-      held = true;
-      if (n) {
-        // Ctrl+Q, then a digit: the focus goes to that pick
-        tapped = 0; // a digit, not a tap
-        if (ses && n <= ses.els.length) land(n - 1);
-        return;
-      }
-      if (ses?.els.every((el) => el.isConnected)) {
-        tapped = performance.now(); // inside a session: the move waits for the keys to be let go (see keyup)
-        return touch();
-      }
+      if (ses?.els.every((el) => el.isConnected)) return step();
       end(); // no session, or a pick left the page (re-rendered): start over
       const from = active();
       try {
