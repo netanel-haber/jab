@@ -243,6 +243,7 @@
     .badge { position: fixed; min-width: 18px; height: 18px; padding: 0 3px; box-sizing: border-box; border-radius: 9px; background: #2b6f4b; color: #fff; opacity: .85; font: 700 11px/18px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); }
     .badge.now { background: #00e676; color: #00210e; outline: 2px solid #00210e; box-shadow: 0 0 0 4px rgba(0, 230, 118, .55), 0 2px 6px rgba(0, 0, 0, .4); transform: scale(1.15); z-index: 1; }
     .badge.off { opacity: .65; }
+    .key { display: inline-block; margin-left: 4px; padding: 0 4px; height: 13px; border-radius: 3px; background: #fff; color: #00210e; font: 700 9px/13px system-ui, sans-serif; vertical-align: 1px; box-shadow: 0 1px 0 rgba(0, 0, 0, .45); }
     .note { position: fixed; right: 16px; bottom: 16px; max-width: 280px; padding: 6px 10px; border-radius: 6px; background: #1f4f35; color: #fff; font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 2px 6px rgba(0, 0, 0, .3); }`);
   root.adoptedStyleSheets = [sheet];
   const draw = (className, textContent) => {
@@ -257,18 +258,19 @@
   let ses = null,
     timer;
   // each badge sits on the top-left corner of its control, or at the screen edge with an arrow when the control is off screen; the
-  // lit or focused one is drawn stronger, and the lit one has ↵ for Enter
+  // lit or focused one is drawn stronger, and the lit one has an Enter key beside its number
   const show = () =>
     ses?.badges.forEach((badge, i) => {
       const r = ses.els[i].getBoundingClientRect();
       const arrow =
         r.top >= innerHeight ? "↓" : r.bottom <= 0 ? "↑" : r.left >= innerWidth ? "→" : r.right <= 0 ? "←" : "";
       const lit = ses.lit && i == 0;
-      badge.textContent = `${i + 1}${arrow}${lit ? " ↵" : ""}`;
+      badge.textContent = `${i + 1}${arrow}`;
+      if (lit) badge.append(Object.assign(document.createElement("span"), { className: "key", textContent: "Enter" }));
       badge.hidden = !r.width && !r.height; // the page has hidden it
       badge.classList.toggle("off", !!arrow);
       badge.classList.toggle("now", lit || ses.els[i] == active());
-      badge.style.cssText = `left: ${Math.min(Math.max(2, r.left - 8), innerWidth - 44)}px; top: ${Math.min(Math.max(2, r.top - 8), innerHeight - 22)}px`;
+      badge.style.cssText = `left: ${Math.min(Math.max(2, r.left - 8), innerWidth - badge.offsetWidth - 2)}px; top: ${Math.min(Math.max(2, r.top - 8), innerHeight - 22)}px`;
     });
   const end = () => {
     clearTimeout(timer);
