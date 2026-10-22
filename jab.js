@@ -256,15 +256,15 @@
   // keys are the page's again. Anything else you do ends the session, and so do 10 s without a press.
   let ses = null,
     timer;
-  // each badge sits on the top-left corner of its control, or at the screen edge with an arrow when the control is off screen; the
-  // lit or focused one is drawn stronger, and the lit one points down into its control and says Enter uses it
+  // each badge sits on the top-left corner of its control with an arrow into it, or at the screen edge with an arrow the way to it
+  // when the control is off screen; the lit or focused one is drawn stronger, and the lit one says Enter uses it
   const show = () =>
     ses?.badges.forEach((badge, i) => {
       const r = ses.els[i].getBoundingClientRect();
       const arrow =
         r.top >= innerHeight ? "↓" : r.bottom <= 0 ? "↑" : r.left >= innerWidth ? "→" : r.right <= 0 ? "←" : "";
       const lit = ses.lit && i == 0;
-      badge.textContent = `${i + 1}${arrow || (lit ? "↘ Enter" : "")}`;
+      badge.textContent = `${i + 1}${arrow || "↘"}${lit ? " Enter" : ""}`;
       badge.hidden = !r.width && !r.height; // the page has hidden it
       badge.classList.toggle("off", !!arrow);
       badge.classList.toggle("now", lit || ses.els[i] == active());
