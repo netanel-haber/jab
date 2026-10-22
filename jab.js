@@ -355,15 +355,15 @@
   );
 
   // A press of the shortcut, from background.js. The browser keeps the shortcut's keys from the page, and sends a press as they go
-  // down and, while they are held, some 25 a second: a held press counts once a second. A key coming up on the page is the keys let
-  // go. Every press, counted or not, gives the session another 10 s.
+  // down and, while they are held, some 25 a second: a held press counts every half second. A key coming up on the page is the keys
+  // let go. Every press, counted or not, gives the session another 10 s.
   let counted = 0,
     released = true,
     first = true;
   addEventListener("keyup", () => (released = true), true);
   chrome.runtime.onMessage.addListener(() => {
     if (ses) touch();
-    if (!released && performance.now() - counted < 1000) return;
+    if (!released && performance.now() - counted < 500) return;
     released = first; // the press that put jab here: its keys may have come up before jab could see it, so the next press counts
     first = false;
     counted = performance.now();
