@@ -355,7 +355,7 @@
   );
 
   // A press of the shortcut, from background.js. The browser keeps the shortcut's keys from the page, and sends a press as they go
-  // down and, while they are held, some 25 a second after the keyboard's repeat delay: held, they move on every half second. A key
+  // down and, while they are held, some 25 a second after the keyboard's repeat delay: held, they move on once a second. A key
   // coming up on the page is the keys let go. The press that put jab on the page may have been let go before jab could see it, so
   // the press after it waits: for the keys to come up (it was a press of its own) or for another press (the keys are held). Every
   // press, counted or not, gives the session another 10 s.
@@ -374,9 +374,9 @@
   );
   chrome.runtime.onMessage.addListener(() => {
     if (ses) touch();
-    if (waiting) return void (waiting = unsure = false); // held: from here on, every half second
+    if (waiting) return void (waiting = unsure = false); // held: from here on, once a second
     if (unsure) return void (waiting = true);
-    if (!released && performance.now() - counted < 500) return;
+    if (!released && performance.now() - counted < 1000) return;
     unsure = !counted; // the press that put jab here
     go();
   });
