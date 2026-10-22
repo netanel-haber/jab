@@ -264,7 +264,7 @@
       const arrow =
         r.top >= innerHeight ? "↓" : r.bottom <= 0 ? "↑" : r.left >= innerWidth ? "→" : r.right <= 0 ? "←" : "";
       const lit = ses.lit && i == 0;
-      badge.textContent = `${i + 1}${arrow || "↘"}${lit ? " Enter" : ""}`;
+      badge.textContent = `${i + 1}${lit ? " Enter " : ""}${arrow || "↘"}`;
       badge.hidden = !r.width && !r.height; // the page has hidden it
       badge.classList.toggle("off", !!arrow);
       badge.classList.toggle("now", lit || ses.els[i] == active());
