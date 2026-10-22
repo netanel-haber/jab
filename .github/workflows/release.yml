@@ -1,5 +1,5 @@
-# The Chrome Web Store package for a version: the files manifest.json names (itself, its icons, its background script, its popup)
-# and the files those load (the popup's scripts, jab.js), and nothing else, zipped and attached to the version's release; a version
+# The Chrome Web Store package for a version: the files manifest.json names (itself, its icons, its background script) and the
+# files the background script puts into pages (jab.js), and nothing else, zipped and attached to the version's release; a version
 # with no release yet gets one, published, its notes the pull requests merged since the version before.
 # A push to main that changes manifest.json to a version with no tag yet tags it (v0.7.5, at that commit) and packages it; so
 # does a run by hand with no tag. A tag pushed by hand, or a run by hand with a tag, packages that tag. (This one workflow does
@@ -49,11 +49,9 @@ jobs:
         run: |
           version=$(jq -r .version manifest.json)
           [ "v$version" = "$TAG" ] || { echo "manifest.json says $version, the tag is $TAG"; exit 1; }
-          files=$(jq -r '"manifest.json", .icons[], .background.service_worker, .action.default_popup' manifest.json)
-          # and what those load: the popup's scripts, and the files the background script puts into a page
-          more=$(grep -ho 'src="[^"]*"' $(printf '%s\n' $files | grep '\.html$') | cut -d'"' -f2)
-          more="$more $(grep -ho 'files: \[[^]]*\]' $(printf '%s\n' $files | grep '\.js$') | grep -o '"[^"]*"' | tr -d '"')"
-          files=$(printf '%s\n' $files $more | sort -u)
+          files=$(jq -r '"manifest.json", .icons[], .background.service_worker' manifest.json)
+          injected=$(grep -ho 'files: \[[^]]*\]' $(jq -r .background.service_worker manifest.json) | grep -o '"[^"]*"' | tr -d '"')
+          files=$(printf '%s\n' $files $injected | sort -u)
           zip -X "jab-$version.zip" $files
           unzip -l "jab-$version.zip"
           echo "ZIP=jab-$version.zip" >> "$GITHUB_ENV"

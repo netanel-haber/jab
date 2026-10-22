@@ -15,5 +15,5 @@
       "description": "Highlight the control/field the ranker assumes you want; Enter uses it"
     }
   },
-  "action": { "default_popup": "popup.html", "default_title": "jab" }
+  "action": { "default_title": "jab: Ctrl+. (click to change it)" }
 }

@@ -2,6 +2,7 @@
 // changed it), and lets it into that tab for that press (activeTab). It hands the press to jab.js in the tab's page, putting jab.js
 // there first when the page has none yet: jab touches a page only when you press its shortcut there.
 chrome.commands.onCommand.addListener(async (command, tab) => {
+  check(); // a press means there is a shortcut: no "!"
   const press = () => chrome.tabs.sendMessage(tab.id, "press", { frameId: 0 });
   try {
     await press();
@@ -11,11 +12,19 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["jab.js"] }).then(press, () => {});
   }
 });
-// No shortcut: another extension had Ctrl+. first. jab's button shows "!" until it has one, and its popup says how to set one.
-// (Chrome does not say when the shortcut changes: the popup checks again.)
+// jab's button opens the browser's page for changing its shortcut (Edge opens chrome:// addresses as its own edge:// ones).
+chrome.action.onClicked.addListener(() => chrome.tabs.create({ url: "chrome://extensions/shortcuts" }));
+// The button says what the shortcut is; with none (another extension had Ctrl+. first) it shows "!" and says so. Chrome does not
+// tell when the shortcut changes, so this runs again on every press and on the browser starting.
+const NAMES = { Period: ".", Comma: ",", MacCtrl: "Control", Command: "⌘" }; // as Chrome names the keys
 const check = async () => {
   const { shortcut } = (await chrome.commands.getAll()).find((c) => c.name == "jab");
+  const keys = shortcut
+    .split("+")
+    .map((k) => NAMES[k] ?? k)
+    .join("+");
   chrome.action.setBadgeText({ text: shortcut ? "" : "!" });
+  chrome.action.setTitle({ title: shortcut ? `jab: ${keys} (click to change it)` : "jab has no shortcut: click to set one" });
 };
 chrome.runtime.onInstalled.addListener(check);
 chrome.runtime.onStartup.addListener(check);
