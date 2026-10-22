@@ -1,12 +1,12 @@
 # jab privacy policy
 
-Last updated: October 14, 2026
+Last updated: October 22, 2026
 
-jab is a smart tab: a browser extension that highlights the control you most likely want next when you press Ctrl+Q, and uses it when you press Enter.
+jab is a smart tab: a browser extension that highlights the control you most likely want next when you press Ctrl+., and uses it when you press Enter.
 
 ## What jab reads
 
-When you press Ctrl+Q, jab reads the page you are on, in your browser:
+When you press Ctrl+., jab reads the page you are on, in your browser:
 
 - the focusable controls (links, buttons, fields): their kind, label, link address, position, size, look, and the text around them;
 - whether a field is filled in (not what is typed in it);
@@ -17,12 +17,15 @@ When you press Ctrl+Q, jab reads the page you are on, in your browser:
 It ranks the controls on your own device, with a model that ships inside the extension, and highlights the best ones. That is all.
 
 - Nothing is sent anywhere. jab makes no network requests and loads no files: its model is part of its own script.
-- Nothing is stored. What jab reads is discarded as soon as the ranking is done; it keeps no history, no logs and no settings.
+- Nothing is stored. What jab reads is discarded as soon as the ranking is done; it keeps no history, no logs and no settings (your
+  browser keeps jab's shortcut).
 - Nothing is shared or sold, and there are no analytics, ads or third-party code.
 
 ## Permissions
 
-jab runs on every page (`<all_urls>`) so that Ctrl+Q works wherever you are. It asks for no other permissions.
+jab can read no page until you press its shortcut there. The press gives it that one tab, for as long as the page stays open
+(`activeTab`), and jab puts its script into that page then (`scripting`). It asks for no other permissions, and reads no other
+page or tab.
 
 ## Contact
 

@@ -1,17 +1,19 @@
 {
   "manifest_version": 3,
   "name": "jab",
-  "version": "0.7.8",
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["jab.js"],
-      "all_frames": true
-    }
-  ],
+  "version": "1.0.0",
   "homepage_url": "https://jab.run",
-  "description": "Smart Tab: Ctrl+Q highlights the control/field the ranker assumes you want, based on the page, focused elements, etc. Enter uses it.",
+  "description": "Smart Tab: Ctrl+. highlights the control/field the ranker assumes you want, based on the page, focused elements, etc. Enter uses it.",
   "icons": {
     "128": "docs/icon.png"
-  }
+  },
+  "permissions": ["activeTab", "scripting"],
+  "background": { "service_worker": "background.js" },
+  "commands": {
+    "jab": {
+      "suggested_key": { "default": "Ctrl+Period", "mac": "MacCtrl+Period" },
+      "description": "Highlight the control/field the ranker assumes you want; Enter uses it"
+    }
+  },
+  "action": { "default_title": "jab: Ctrl+. (click to change it)" }
 }
