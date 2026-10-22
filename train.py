@@ -82,7 +82,7 @@ const fs = require("fs"),
   readline = require("readline");
 const [jab, steps, out, kinds] = process.argv.slice(1);
 const stub = new Proxy(function () {}, { get: () => stub, set: () => true, apply: () => stub, construct: () => stub });
-Object.assign(globalThis, { document: stub, CSSStyleSheet: stub, addEventListener: stub, setInterval: stub });
+Object.assign(globalThis, { document: stub, CSSStyleSheet: stub, addEventListener: stub, setInterval: stub, chrome: stub });
 const { describe } = require(path.resolve(jab));
 const kindOf = JSON.parse(kinds);
 const ids = new Map(),

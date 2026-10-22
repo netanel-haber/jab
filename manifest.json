@@ -1,22 +1,19 @@
 {
   "manifest_version": 3,
   "name": "jab",
-  "version": "0.8.0",
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["jab.js"],
-      "all_frames": true
-    }
-  ],
-  "permissions": ["storage"],
-  "action": { "default_popup": "popup.html", "default_title": "jab: set the shortcut" },
+  "version": "1.0.0",
   "homepage_url": "https://jab.run",
   "description": "Smart Tab: Ctrl+. highlights the control/field the ranker assumes you want, based on the page, focused elements, etc. Enter uses it.",
   "icons": {
     "128": "docs/icon.png"
   },
-  "browser_specific_settings": {
-    "gecko": { "id": "jab@jab.run", "strict_min_version": "142.0", "data_collection_permissions": { "required": ["none"] } }
-  }
+  "permissions": ["activeTab", "scripting"],
+  "background": { "service_worker": "background.js" },
+  "commands": {
+    "jab": {
+      "suggested_key": { "default": "Ctrl+Period", "mac": "MacCtrl+Period" },
+      "description": "Light the control you most likely want; Enter uses it"
+    }
+  },
+  "action": { "default_popup": "popup.html", "default_title": "jab" }
 }

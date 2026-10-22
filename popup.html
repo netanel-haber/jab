@@ -3,19 +3,17 @@
 <title>jab</title>
 <style>
   :root { color-scheme: light dark; }
-  body { width: 240px; margin: 0; padding: 14px 16px; font: 13px/1.45 system-ui, sans-serif; }
-  p { margin: 0 0 8px; }
+  body { width: 250px; margin: 0; padding: 14px 16px; font: 13px/1.45 system-ui, sans-serif; }
+  p { margin: 0 0 10px; }
+  p[hidden] { display: none; }
   kbd { display: inline-block; padding: 1px 6px; border: 1px solid #a7b0ac; border-bottom-width: 2px; border-radius: 4px; background: linear-gradient(#fff, #dfe4e2); color: #1d2b24; font: 700 12px/18px system-ui, sans-serif; }
-  #why { color: #c62828; }
-  #why:empty, #reset[hidden] { display: none; }
-  #reset { padding: 0; border: 0; background: none; color: #2b6f4b; font: inherit; text-decoration: underline; cursor: pointer; }
+  #none { color: #c62828; }
+  button { padding: 4px 10px; border: 1px solid #2b6f4b; border-radius: 6px; background: #2b6f4b; color: #fff; font: 600 12px/18px system-ui, sans-serif; cursor: pointer; }
   @media (prefers-color-scheme: dark) {
-    #why { color: #ff8a80; }
-    #reset { color: #6fdc9c; }
+    #none { color: #ff8a80; }
   }
 </style>
-<p>jab's shortcut: <kbd id="now"></kbd></p>
-<p>Press another to use it instead.</p>
-<p id="why"></p>
-<button id="reset" hidden>Back to Ctrl+.</button>
+<p id="has">Press <kbd id="now">Ctrl+.</kbd> on a page: jab lights the control you most likely want, and Enter uses it.</p>
+<p id="none" hidden>jab has no shortcut: another extension has Ctrl+.</p>
+<button id="change">Change the shortcut</button>
 <script src="popup.js"></script>

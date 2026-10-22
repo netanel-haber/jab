@@ -1,6 +1,6 @@
-// jab, a smart tab, in every page (a content script): finds the focusable controls, ranks them with the LightGBM trees at the end
-// of this file (written there by train.py), handles the shortcut (Ctrl+.) and draws the badges. Nothing is cached per page: every
-// press scores the page as it is right now.
+// jab, a smart tab, in the page you press its shortcut (Ctrl+.) on, put there by background.js on the first press: finds the
+// focusable controls, ranks them with the LightGBM trees at the end of this file (written there by train.py), and draws the badges.
+// Nothing is cached per page: every press scores the page as it is right now.
 {
   const SEL =
     'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],[tabindex]:not([tabindex="-1"]),[role=button],[role=link],[role=textbox],[role=combobox],[role=searchbox],[role=checkbox],[role=tab],[role=menuitem]';
@@ -300,20 +300,11 @@
   // type into: a button is pressed, a link followed, a box ticked, a read-only field (a date picker, mostly) opened.
   const use = (el, press) => {
     end();
-    if (!el.isConnected) return note(`That control has left the page: press ${press.label} again.`);
+    if (!el.isConnected) return note("That control has left the page: press jab's shortcut again.");
     el.focus();
     if (press && !typable(el)) el.click();
     else if (active() != el) note("jab could not move the focus here: the page keeps it where it is.");
   };
-  // The shortcut (the key by where it is, whatever it types on the layout). Ctrl+. types nothing, no browser uses it on any system,
-  // and a page's access keys, which take Alt or Option, never can; you can set another in jab's toolbar popup (popup.js), which
-  // keeps it in the browser's synced storage. Inside a session, the shortcut moves the focus to the next pick.
-  const CTRL_DOT = { code: "Period", ctrlKey: true, metaKey: false, shiftKey: false, label: "Ctrl+." };
-  let press = CTRL_DOT;
-  chrome.storage.sync.get("press", (r) => (press = r.press ?? CTRL_DOT));
-  chrome.storage.onChanged.addListener((c) => c.press && (press = c.press.newValue ?? CTRL_DOT));
-  const isPress = (e) =>
-    e.code == press.code && e.ctrlKey == press.ctrlKey && e.metaKey == press.metaKey && e.shiftKey == press.shiftKey && !e.altKey;
   // Focus pick i. A pick that does not take the focus (the page has since hidden it, or a pop-up keeps the focus to itself)
   // is replaced by the next control in the ranking, or dropped when the ranking runs out; with no pick left the session ends.
   const land = (i) => {
@@ -344,7 +335,7 @@
   addEventListener(
     "keydown",
     (e) => {
-      if (!ses || isPress(e) || ["Control", "Shift", "Alt", "Meta", "AltGraph"].includes(e.key)) return;
+      if (!ses || ["Control", "Shift", "Alt", "Meta", "AltGraph"].includes(e.key)) return;
       if (!ses.lit) return end();
       const el = ses.els[0],
         plain = !e.ctrlKey && !e.metaKey && !e.altKey;
@@ -363,96 +354,99 @@
     true,
   );
 
-  addEventListener(
-    "keydown",
-    (e) => {
-      if (!isPress(e)) return;
-      if (!chrome.runtime?.id) return note("jab was reloaded: refresh this page to use it."); // a stale copy of this script leaves the shortcut alone
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.repeat) return; // holding the keys down is one press
-      if (ses?.els.every((el) => el.isConnected)) return step();
-      end(); // no session, or a pick left the page (re-rendered): start over
-      const from = active();
+  // A press of the shortcut, from background.js. The browser keeps the shortcut's keys from the page, and sends a press as they go
+  // down and, while they are held, some 25 a second: a held press counts once a second. A key coming up on the page is the keys let
+  // go. Every press, counted or not, gives the session another 10 s.
+  let counted = 0,
+    released = true,
+    first = true;
+  addEventListener("keyup", () => (released = true), true);
+  chrome.runtime.onMessage.addListener(() => {
+    if (ses) touch();
+    if (!released && performance.now() - counted < 1000) return;
+    released = first; // the press that put jab here: its keys may have come up before jab could see it, so the next press counts
+    first = false;
+    counted = performance.now();
+    if (ses?.els.every((el) => el.isConnected)) return step();
+    end(); // no session, or a pick left the page (re-rendered): start over
+    const from = active();
+    try {
+      const { els, controls } = collect();
+      const paras = [...document.querySelectorAll("p")].slice(0, 400);
+      let query = location.search.slice(1).replace(/\+/g, " ");
       try {
-        const { els, controls } = collect();
-        const paras = [...document.querySelectorAll("p")].slice(0, 400);
-        let query = location.search.slice(1).replace(/\+/g, " ");
-        try {
-          query = decodeURIComponent(query); // a search page's query, mostly
-        } catch {}
-        const page = {
-          path: location.pathname,
-          title: document.title,
-          desc: document.querySelector("meta[name=description]")?.content ?? "",
-          // what the page says it is about, how much it reads, and the size of its running text
-          h1: text(document.querySelector("h1"), 80),
-          query: cut(query, 80),
-          prose: Math.round(Math.min(50, paras.reduce((n, p) => n + p.textContent.length, 0) / 1000) * 10) / 10,
-          base:
-            parseFloat(
-              getComputedStyle(paras.find((p) => text(p).length >= 60) ?? document.body ?? document.documentElement)
-                .fontSize,
-            ) || 16,
-          scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
-          // the window it is seen in
-          vw: innerWidth,
-          vh: innerHeight,
-        };
-        const model = JSON.parse(MODEL),
-          scores = rank(model, controls, els.indexOf(from), page);
-        // a link to this very page would only load it again (one with a #fragment moves within it, and a role=button one is the
-        // page's script), so it is never a pick
-        const reloads = (e) => {
-          const href = e.getAttribute("href")?.trim();
-          return (
-            e instanceof HTMLAnchorElement &&
-            !!href &&
-            !href.includes("#") &&
-            e.getAttribute("role") != "button" &&
-            e.href == location.href.split("#")[0]
-          );
-        };
-        // every control by its score (the focused one has none: null), and of two that lead to the same place only the better one
-        const place = places(controls),
-          taken = new Set();
-        const order = scores
-          .map((v, i) => [v, els[i], controls[i]])
-          .filter(([v, el]) => v !== null && !reloads(el) && !isAd(el))
-          .sort((a, b) => b[0] - a[0])
-          .filter(([, , c]) => !taken.has(place.get(c.i)) && taken.add(place.get(c.i)));
-        // the best two, and the 3rd and 4th when they are more likely wanted than not (the score train.py found for that)
-        const picked = order.slice(0, 4).filter(([v], k) => k < 2 || v >= (model.sure ?? -Infinity)),
-          best = picked.map(([, el]) => el);
-        // and the page's search, unless you are typing into something: a field before a button or link that opens one, the one in
-        // the page's content (a filter, a section's own search) before the site's. It takes the last pick's place (or the free one
-        // after it) when every pick is that specific, an item of a list (a headline, a result, a product) or a link 2+ levels deep,
-        // however sure jab is of them: then the search is the way on to anything else
-        const specific = ([, , c]) =>
-          (c.like > 0 && !c.chrome) || (c.kind == "a" && hrefPath(c).split("/").filter(Boolean).length >= 2);
-        const searches = from?.matches(`${TYPED},${EDITABLE}`) ? [] : order.filter(([, el]) => isSearch(el));
-        const field = ([, , c]) => isField(c),
-          search = (searches.find((s) => field(s) && !s[2].chrome) ??
-            searches.find(field) ??
-            searches.find(([, , c]) => !c.chrome) ??
-            searches[0])?.[1];
-        if (search && !best.includes(search) && picked.every(specific)) best.splice(Math.min(best.length, 3), 1, search);
-        if (!best.length) return note("jab found nothing to jump to here.");
-        // the next 20 stand in for a pick that turns out not to take the focus
-        const rest = order
-          .map(([, el]) => el)
-          .filter((el) => !best.includes(el))
-          .slice(0, 20);
-        ses = { els: best, rest, badges: best.map((_, i) => draw("badge", i + 1)), lit: true };
-        best[0].scrollIntoView({ block: "nearest", inline: "nearest" }); // the first press only lights the best pick, in view
-        show();
-        touch();
-      } catch (error) {
-        note(`jab could not answer: ${error.message}`);
-      }
-    },
-    true,
-  );
+        query = decodeURIComponent(query); // a search page's query, mostly
+      } catch {}
+      const page = {
+        path: location.pathname,
+        title: document.title,
+        desc: document.querySelector("meta[name=description]")?.content ?? "",
+        // what the page says it is about, how much it reads, and the size of its running text
+        h1: text(document.querySelector("h1"), 80),
+        query: cut(query, 80),
+        prose: Math.round(Math.min(50, paras.reduce((n, p) => n + p.textContent.length, 0) / 1000) * 10) / 10,
+        base:
+          parseFloat(
+            getComputedStyle(paras.find((p) => text(p).length >= 60) ?? document.body ?? document.documentElement)
+              .fontSize,
+          ) || 16,
+        scroll: Math.min(20, document.documentElement.scrollHeight / innerHeight),
+        // the window it is seen in
+        vw: innerWidth,
+        vh: innerHeight,
+      };
+      const model = JSON.parse(MODEL),
+        scores = rank(model, controls, els.indexOf(from), page);
+      // a link to this very page would only load it again (one with a #fragment moves within it, and a role=button one is the
+      // page's script), so it is never a pick
+      const reloads = (e) => {
+        const href = e.getAttribute("href")?.trim();
+        return (
+          e instanceof HTMLAnchorElement &&
+          !!href &&
+          !href.includes("#") &&
+          e.getAttribute("role") != "button" &&
+          e.href == location.href.split("#")[0]
+        );
+      };
+      // every control by its score (the focused one has none: null), and of two that lead to the same place only the better one
+      const place = places(controls),
+        taken = new Set();
+      const order = scores
+        .map((v, i) => [v, els[i], controls[i]])
+        .filter(([v, el]) => v !== null && !reloads(el) && !isAd(el))
+        .sort((a, b) => b[0] - a[0])
+        .filter(([, , c]) => !taken.has(place.get(c.i)) && taken.add(place.get(c.i)));
+      // the best two, and the 3rd and 4th when they are more likely wanted than not (the score train.py found for that)
+      const picked = order.slice(0, 4).filter(([v], k) => k < 2 || v >= (model.sure ?? -Infinity)),
+        best = picked.map(([, el]) => el);
+      // and the page's search, unless you are typing into something: a field before a button or link that opens one, the one in
+      // the page's content (a filter, a section's own search) before the site's. It takes the last pick's place (or the free one
+      // after it) when every pick is that specific, an item of a list (a headline, a result, a product) or a link 2+ levels deep,
+      // however sure jab is of them: then the search is the way on to anything else
+      const specific = ([, , c]) =>
+        (c.like > 0 && !c.chrome) || (c.kind == "a" && hrefPath(c).split("/").filter(Boolean).length >= 2);
+      const searches = from?.matches(`${TYPED},${EDITABLE}`) ? [] : order.filter(([, el]) => isSearch(el));
+      const field = ([, , c]) => isField(c),
+        search = (searches.find((s) => field(s) && !s[2].chrome) ??
+          searches.find(field) ??
+          searches.find(([, , c]) => !c.chrome) ??
+          searches[0])?.[1];
+      if (search && !best.includes(search) && picked.every(specific)) best.splice(Math.min(best.length, 3), 1, search);
+      if (!best.length) return note("jab found nothing to jump to here.");
+      // the next 20 stand in for a pick that turns out not to take the focus
+      const rest = order
+        .map(([, el]) => el)
+        .filter((el) => !best.includes(el))
+        .slice(0, 20);
+      ses = { els: best, rest, badges: best.map((_, i) => draw("badge", i + 1)), lit: true };
+      best[0].scrollIntoView({ block: "nearest", inline: "nearest" }); // the first press only lights the best pick, in view
+      show();
+      touch();
+    } catch (error) {
+      note(`jab could not answer: ${error.message}`);
+    }
+  });
 
   // The ranker: the LightGBM trees in MODEL (below, made by train.py) score every control of the page from cheap features (where it is,
   // what it is, how it looks, what is on top, what reads as content, its words), no neural network.
