@@ -1,6 +1,6 @@
 // jab, a smart tab, in every page (a content script): finds the focusable controls, ranks them with the LightGBM trees at the end
-// of this file (written there by train.py), handles Ctrl+. and draws the badges. Nothing is cached per page: every press scores the
-// page as it is right now.
+// of this file (written there by train.py), handles the shortcut (Ctrl+.) and draws the badges. Nothing is cached per page: every
+// press scores the page as it is right now.
 {
   const SEL =
     'a[href],button,input:not([type=hidden]),select,textarea,summary,[contenteditable=""],[contenteditable=true],[tabindex]:not([tabindex="-1"]),[role=button],[role=link],[role=textbox],[role=combobox],[role=searchbox],[role=checkbox],[role=tab],[role=menuitem]';
@@ -255,9 +255,9 @@
   };
   const note = (message) => setTimeout((n) => n.remove(), 4000, draw("note", message));
 
-  // A session: our 2 to 4 picks and their badges. The first Ctrl+. only lights pick 1 (lit): nothing is focused, so nothing opens,
-  // and Enter uses it. Another Ctrl+. is you choosing: the focus goes to the next pick, and from there on your keys are the page's
-  // again. Anything else you do ends the session, and so do 10 s without a press.
+  // A session: our 2 to 4 picks and their badges. The first press of the shortcut only lights pick 1 (lit): nothing is focused, so
+  // nothing opens, and Enter uses it. Another press is you choosing: the focus goes to the next pick, and from there on your keys are
+  // the page's again. Anything else you do ends the session, and so do 10 s without a press.
   let ses = null,
     timer;
   // each badge sits on the top-left corner of its control with an arrow into it, or at the screen edge with an arrow the way to it
@@ -300,14 +300,20 @@
   // type into: a button is pressed, a link followed, a box ticked, a read-only field (a date picker, mostly) opened.
   const use = (el, press) => {
     end();
-    if (!el.isConnected) return note("That control has left the page: press Ctrl+. again.");
+    if (!el.isConnected) return note(`That control has left the page: press ${press.label} again.`);
     el.focus();
     if (press && !typable(el)) el.click();
     else if (active() != el) note("jab could not move the focus here: the page keeps it where it is.");
   };
-  // Ctrl+. (the key by where it is, whatever it types on the layout) types nothing, no browser uses it on any system, and a page's
-  // access keys, which take Alt or Option, never can. Inside a session, Ctrl+. moves the focus to the next pick.
-  const isPress = (e) => e.code == "Period" && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+  // The shortcut (the key by where it is, whatever it types on the layout). Ctrl+. types nothing, no browser uses it on any system,
+  // and a page's access keys, which take Alt or Option, never can; you can set another in jab's toolbar popup (popup.js), which
+  // keeps it in the browser's synced storage. Inside a session, the shortcut moves the focus to the next pick.
+  const CTRL_DOT = { code: "Period", ctrlKey: true, metaKey: false, shiftKey: false, label: "Ctrl+." };
+  let press = CTRL_DOT;
+  chrome.storage.sync.get("press", (r) => (press = r.press ?? CTRL_DOT));
+  chrome.storage.onChanged.addListener((c) => c.press && (press = c.press.newValue ?? CTRL_DOT));
+  const isPress = (e) =>
+    e.code == press.code && e.ctrlKey == press.ctrlKey && e.metaKey == press.metaKey && e.shiftKey == press.shiftKey && !e.altKey;
   // Focus pick i. A pick that does not take the focus (the page has since hidden it, or a pop-up keeps the focus to itself)
   // is replaced by the next control in the ranking, or dropped when the ranking runs out; with no pick left the session ends.
   const land = (i) => {
@@ -361,7 +367,7 @@
     "keydown",
     (e) => {
       if (!isPress(e)) return;
-      if (!chrome.runtime?.id) return note("jab was reloaded: refresh this page to use it."); // a stale copy of this script leaves Ctrl+. alone
+      if (!chrome.runtime?.id) return note("jab was reloaded: refresh this page to use it."); // a stale copy of this script leaves the shortcut alone
       e.preventDefault();
       e.stopPropagation();
       if (e.repeat) return; // holding the keys down is one press

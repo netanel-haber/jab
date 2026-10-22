@@ -9,6 +9,8 @@
       "all_frames": true
     }
   ],
+  "permissions": ["storage"],
+  "action": { "default_popup": "popup.html", "default_title": "jab: set the shortcut" },
   "homepage_url": "https://jab.run",
   "description": "Smart Tab: Ctrl+. highlights the control/field the ranker assumes you want, based on the page, focused elements, etc. Enter uses it.",
   "icons": {

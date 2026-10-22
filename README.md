@@ -18,6 +18,8 @@ The ranker is lean: Just 18KB, LightGBM (2016) trees running in-browser CPU-only
 
 Anything else you do (<kbd>Esc</kbd>, clicking, another key) ends it, and the next <kbd>Ctrl</kbd>+<kbd>.</kbd> will be a new session.
 
+Another shortcut: click jab's button in the toolbar and press it.
+
 Open source (MIT): [github.com/netanel-haber/jab](https://github.com/netanel-haber/jab)
 
 <details><summary>MIT License</summary>
