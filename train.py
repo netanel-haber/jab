@@ -6,8 +6,8 @@
 
 Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
 corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string), which puts the
-controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure") and the score below which
-the best guess is more likely wrong than right, where the page's search leads instead ("lead"), both found on the held-out steps.
+controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure") and the score the least
+sure 2% of best guesses fall below, where the page's search leads instead ("lead"), both found on the held-out steps.
 The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
 the browser computes.
 steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
@@ -369,9 +369,11 @@ def cut(steps_, ids, scores, stops):
     return math.floor(found[k][0]) + 1 if found and gain[k] > 0 else None
 
 
-# a 3rd or 4th stop shows only from "sure"; below "lead" the first stop is more likely unwanted, and jab puts the page's search first
+# a 3rd or 4th stop shows only from "sure"; below "lead", where the best guess of the least sure 2% of the held-out steps scores, jab
+# puts the page's search first
 ranker["sure"] = cut(held, held_ids, held_scores, slice(2, 4))
-ranker["lead"] = cut(held, held_ids, held_scores, slice(0, 1))
+starts = np.cumsum([0, *map(len, held_ids)])
+ranker["lead"] = math.ceil(np.quantile([held_scores[a:b].max() for a, b in zip(starts, starts[1:]) if b > a], 0.02))
 
 
 def report(name, steps_):
