@@ -1,15 +1,25 @@
 // jab's background script. The browser tells it when you press jab's shortcut (the "jab" command in manifest.json: Ctrl+. unless you
 // changed it), and lets it into that tab for that press (activeTab). It hands the press to jab.js in the tab's page, putting jab.js
 // there first when the page has none yet: jab touches a page only when you press its shortcut there.
+// The tabs jab.js is going into. A press there meanwhile is dropped: a busy page can take a while to let jab.js in, and a second
+// copy put in beside the first would step through the picks twice on every press.
+const loading = new Set();
 chrome.commands.onCommand.addListener(async (command, tab) => {
   check(); // a press means there is a shortcut: no "!"
+  if (loading.has(tab.id)) return;
   const press = () => chrome.tabs.sendMessage(tab.id, "press", { frameId: 0 });
   try {
     await press();
   } catch {
     // no jab in the page yet (or only one from before jab was updated, which no longer hears it); a page no extension may run in
     // (the browser's own pages, the add-on stores) stays as it is
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["jab.js"] }).then(press, () => {});
+    if (loading.has(tab.id)) return; // another press got here first
+    loading.add(tab.id);
+    await chrome.scripting
+      .executeScript({ target: { tabId: tab.id }, files: ["jab.js"] })
+      .then(press)
+      .catch(() => {})
+      .finally(() => loading.delete(tab.id));
   }
 });
 // jab's button opens the browser's page for changing its shortcut (Edge opens chrome:// addresses as its own edge:// ones).
