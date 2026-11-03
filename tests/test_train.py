@@ -10,35 +10,6 @@ from pathlib import Path
 
 
 class TrainingInputTest(unittest.TestCase):
-    @unittest.skipUnless(importlib.util.find_spec("numba"), "training dependencies required")
-    def test_judgment_loss_gradient(self) -> None:
-        import numba
-        import numpy as np
-
-        source = (Path(__file__).resolve().parents[1] / "train.py").read_text(encoding="utf-8")
-        node = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == "judgment_loss")
-        namespace = {"numba": numba, "np": np}
-        exec(ast.get_source_segment(source, node), namespace)
-        gradient = numba.njit(parallel=True)(namespace["judgment_loss"])
-        scores = np.array([-2.0, 0.4, 2.0, 1.0])
-        labels = np.array([0, 1, 3, 0])
-        boundaries = np.array([0, 4])
-        weights = np.full(4, 1.5)
-
-        def loss(values):
-            return 1.5 * (np.logaddexp.reduce(values) - np.logaddexp.reduce(values[labels > 0]))
-
-        expected = np.array([(loss(scores + delta) - loss(scores - delta)) / 2e-6 for delta in np.eye(4) * 1e-6])
-        actual, curvature = gradient(scores, labels, boundaries, weights, None)
-        np.testing.assert_allclose(actual, expected, atol=1e-8)
-        np.testing.assert_allclose(gradient(scores + 1000, labels, boundaries, weights, None)[0], actual, atol=1e-12)
-        self.assertAlmostEqual(float(actual.sum()), 0)
-        self.assertTrue(np.all(curvature > 0))
-        for uniform in (np.zeros(4, dtype=int), np.ones(4, dtype=int)):
-            grad, hess = gradient(scores, uniform, boundaries, weights, None)
-            np.testing.assert_array_equal(grad, np.zeros(4))
-            np.testing.assert_array_equal(hess, np.zeros(4))
-
     @unittest.skipUnless(importlib.util.find_spec("lightgbm") and importlib.util.find_spec("numba"), "training dependencies required")
     def test_parallel_features_match_serial(self) -> None:
         import numpy as np

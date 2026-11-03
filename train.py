@@ -4,9 +4,8 @@
 # ///
 """jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all] [--threads N]   (needs Node)
 
-Trains a 140-tree LightGBM LambdaRank ranker. Experimental --judgment adds a model that maximizes the probability of choosing
-any acceptable control. Both refit their leaves after growing their trees, then sum their scores; the blend has 340 trees.
-Writes the trees into jab.js (as JSON, in its MODEL string), which puts the
+Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
+corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string), which puts the
 controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"), found on the held-out
 steps. The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
 the browser computes. Page extraction, tree training and refitting use all available CPU threads by default; --threads limits them.
@@ -54,7 +53,6 @@ ap = argparse.ArgumentParser()
 ap.add_argument("steps")
 ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
-ap.add_argument("--judgment", action="store_true", help="experimental: blend in a model of acceptable choices (340 trees)")
 ap.add_argument("--threads", type=int, default=numba.get_num_threads(), help="workers and training threads (default: all available)")
 args = ap.parse_args()
 if not 1 <= args.threads <= numba.config.NUMBA_NUM_THREADS:
@@ -276,29 +274,8 @@ def lambdarank(score, label, start, weight, gain):
     return grad, hess
 
 
-@numba.njit(parallel=True)
-def judgment_loss(score, label, start, weight, _gain):
-    """Negative log probability of picking any acceptable control; positive curvature bounds the diagonal Hessian."""
-    grad, hess = np.zeros(len(score)), np.zeros(len(score))
-    for query in numba.prange(len(start) - 1):
-        begin, end = start[query], start[query + 1]
-        positive = label[begin:end] > 0
-        positives = np.sum(positive)
-        if not positives or positives == end - begin:
-            continue
-        values = score[begin:end]
-        probability = np.exp(values - np.max(values))
-        probability /= np.sum(probability)
-        target = np.where(positive, np.exp(np.minimum(values - np.max(values[positive]), 0.0)), 0.0)
-        target /= np.sum(target)
-        grad[begin:end] = (probability - target) * weight[begin:end]
-        curvature = probability * (1 - probability) + target * (1 - target)
-        hess[begin:end] = np.maximum(curvature, 1e-6) * weight[begin:end]
-    return grad, hess
-
-
-def refit(model, X, y, groups, weight, gradient=lambdarank, passes=3, max_step=None):
-    """Refit leaves with every other tree in place: damped Newton updates, optionally bounded for the judgment objective."""
+def refit(model, X, y, groups, weight):
+    """Refit leaves in three passes with every other tree in place, using damped LambdaRank Newton updates."""
     # every row's leaf, in every tree (in blocks of rows: LightGBM hands them back as 8-byte floats)
     leaf_of = np.vstack([model.predict(X[a : a + 100000], pred_leaf=True).astype(np.int16) for a in range(0, X.shape[0], 100000)])
     info = model.dump_model()["tree_info"]
@@ -306,12 +283,10 @@ def refit(model, X, y, groups, weight, gradient=lambdarank, passes=3, max_step=N
     start = np.concatenate([[0], np.cumsum(groups)])
     label, label_gain = y.astype(np.int64), np.array([2.0**grade - 1 for grade in range(4)])  # LightGBM's default label_gain
     score = sum(v[leaf_of[:, k]] for k, v in enumerate(values))
-    for _ in range(passes):
+    for _ in range(3):
         for k, v in enumerate(values):
-            g, h = gradient(score, label, start, weight, label_gain)
+            g, h = lambdarank(score, label, start, weight, label_gain)
             step = -0.5 * np.bincount(leaf_of[:, k], g, minlength=len(v)) / (np.bincount(leaf_of[:, k], h, minlength=len(v)) + 1)
-            if max_step is not None:
-                step = np.clip(step, -max_step, max_step)
             v += step
             score += step[leaf_of[:, k]]
     for k, v in enumerate(values):
@@ -320,55 +295,37 @@ def refit(model, X, y, groups, weight, gradient=lambdarank, passes=3, max_step=N
 
 
 def grow(steps_):
-    """Fit ordered-target and acceptable-choice trees in parallel, sharing the CPU budget and input rows."""
+    """LightGBM's trees for these steps, their leaves refit together; and the rows they were grown on."""
     X, ids = rows(steps_)
     y = np.concatenate([relevance(s, i) for s, i in zip(steps_, ids)])
     # The generated pages count half: they teach what few real sites show (forms, pop-ups, where the content is), and a model this
     # small has to spend most of itself on the real sites, which are what jab is for.
     weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(steps_, ids)])
     groups = [len(i) for i in ids]
-    boundaries = np.concatenate([[0], np.cumsum(groups)])
-    workers = min(2, args.threads) if args.judgment else 1
-    threads = args.threads // workers
-
-    def fit(judgment):
-        numba.set_num_threads(threads)
-
-        def objective(scores, _data):
-            return judgment_loss(scores, y, boundaries, weight, None)
-
-        config = {**params, "num_threads": threads}
-        if judgment:
-            config.update(objective=objective, num_leaves=31, lambda_l2=1, max_delta_step=2)
-        name = "Judgment" if judgment else "Rank"
-        started = perf_counter()
-        model = lgb.train(config, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=200 if judgment else 140)
-        print(f"{name} grow: {perf_counter() - started:.1f}s", flush=True)
-        started = perf_counter()
-        refit(model, X, y, groups, weight, judgment_loss if judgment else lambdarank, 2 if judgment else 3, 1 if judgment else None)
-        print(f"{name} refit: {perf_counter() - started:.1f}s", flush=True)
-        return model
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        models = list(pool.map(fit, [False, True] if args.judgment else [False]))
-    return models, X
+    started = perf_counter()
+    model = lgb.train(params, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=140)
+    print(f"Grow: {perf_counter() - started:.1f}s", flush=True)
+    started = perf_counter()
+    refit(model, X, y, groups, weight)
+    print(f"Refit: {perf_counter() - started:.1f}s", flush=True)
+    return model, X
 
 
-def scored(models, steps_):
+def scored(model, steps_):
     """every control of these steps, as jab.js ranks them all, with the model's score for it (in jab.js's units); and their ids"""
     X, ids = rows(steps_, every=True)
-    return sum(model.predict(X, raw_score=True, num_threads=args.threads) for model in models) * 100, ids
+    return model.predict(X, raw_score=True, num_threads=args.threads) * 100, ids
 
 
 # The cut ("sure", below) is found on the held-out steps, as trees that did not learn from them rank them: trees are surer of the
 # steps they learned than of a page they have not seen. Those are the trees grown on the training steps; with --all, the shipped
 # trees are grown on every step after them.
 assert held, 'the cut needs eval steps whose page title and description do not occur in training'
-models, X = grow(train)
-held_scores, held_ids = scored(models, held)
+model, X = grow(train)
+held_scores, held_ids = scored(model, held)
 if args.all:
-    del models, X  # their memory, before the shipped trees take theirs
-    models, X = grow([s for s in steps if s["split"] in ("train", "eval")])
+    del model, X  # their memory, before the shipped trees take theirs
+    model, X = grow([s for s in steps if s["split"] in ("train", "eval")])
 
 
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
@@ -414,7 +371,7 @@ def columns(t):
         yield from columns(t[3])
 
 
-trees = [tree(info["tree_structure"]) for model in models for info in model.dump_model()["tree_info"]]
+trees = [tree(info["tree_structure"]) for info in model.dump_model()["tree_info"]]
 # only the columns some tree asks about go in the model, numbered in order: those features, then those words
 used = sorted({j for t in trees for j in columns(t)})
 column = {j: k for k, j in enumerate(used)}
