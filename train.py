@@ -24,6 +24,10 @@ One step per line:
 "h1", "query", "prose", "base", "vw", "vh"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the
 control wanted next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label
 says nothing about, left out of training (optional)}.
+
+- JSONL: U+2028/U+2029 are valid inside strings (seen in scraped labels). Export them as \\u2028/\\u2029 to
+  avoid incompatible line readers; this reader splits records only on LF.
+
 Vocabulary uses only the training split. Evaluation excludes steps whose page title and description also occur in training;
 --all fits the train and eval splits after calibrating on these unseen pages, leaving any probe split unused.
 Prints, for the "eval" steps, overall and per kind of page, with the trees as written into jab.js and every control ranked as jab.js
