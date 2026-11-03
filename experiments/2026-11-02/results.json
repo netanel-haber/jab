@@ -1,0 +1,255 @@
+{
+  "decision": "Keep bundled jab.js weights unchanged. Retain the judgment blend as an opt-in experiment.",
+  "reason": "The gain is concentrated in older captures with missing style metadata. Current captures and the reserved probe do not establish a first-choice improvement; exact-target coverage and inference cost worsen.",
+  "deadline_utc": "2026-11-02T21:25:12+00:00",
+  "data": {
+    "archive_sha256": "4883cbb612281dca3d98d2a96e46fb4e88c213e80c4e9387fcc21eae0c47d86d",
+    "steps": 27296,
+    "train": 21998,
+    "eval": 5267,
+    "probe": 31,
+    "eval_unseen_page_identities_steps": 3312,
+    "eval_real_and_live_steps": 2611,
+    "real_and_live_eval_page_identities": 693,
+    "identity": "(page.title, page.desc); conservative proxy, not a guarantee of site separation"
+  },
+  "metric_order": [
+    "acceptable_first",
+    "exact_target_first",
+    "target_in_top_four",
+    "acceptable_fraction_top_four"
+  ],
+  "exported_evaluation": {
+    "baseline": {
+      "metrics": {
+        "all": [
+          0.87138,
+          0.54287,
+          0.7965,
+          0.78487
+        ],
+        "real": [
+          0.8468,
+          0.47223,
+          0.74837,
+          0.75709
+        ],
+        "synthetic": [
+          0.96291,
+          0.80599,
+          0.97575,
+          0.88837
+        ]
+      },
+      "model_bytes": 18091,
+      "trees": 140
+    },
+    "judgment": {
+      "metrics": {
+        "all": [
+          0.88074,
+          0.50996,
+          0.77989,
+          0.8002
+        ],
+        "real": [
+          0.85906,
+          0.45768,
+          0.74301,
+          0.77585
+        ],
+        "synthetic": [
+          0.96148,
+          0.70471,
+          0.91726,
+          0.89087
+        ]
+      },
+      "model_bytes": 89000,
+      "trees": 340
+    }
+  },
+  "validation_real_and_live": {
+    "fold_0": {
+      "baseline": [
+        0.82884,
+        0.50878,
+        0.79028,
+        0.74303
+      ],
+      "blend": [
+        0.86928,
+        0.50063,
+        0.76301,
+        0.76199
+      ]
+    },
+    "fold_1": {
+      "baseline": [
+        0.83195,
+        0.51553,
+        0.8009,
+        0.73939
+      ],
+      "blend": [
+        0.86922,
+        0.51518,
+        0.78157,
+        0.75561
+      ]
+    }
+  },
+  "evaluation_raw_first_choice_by_source": {
+    "legacy_real": {
+      "n": 597,
+      "baseline": 0.77386935,
+      "blend": 0.82077052
+    },
+    "current_live": {
+      "n": 2014,
+      "baseline": 0.87040715,
+      "blend": 0.87090367
+    }
+  },
+  "exploratory_page_bootstrap": {
+    "resamples": 10000,
+    "seed": 1,
+    "raw_first_choice_gain": 0.01110686,
+    "interval_95": [
+      -0.00386773,
+      0.02547034
+    ],
+    "caution": "Many candidates were compared on the supplied evaluation data. This is descriptive uncertainty, not a corrected significance claim."
+  },
+  "reserved_probe": {
+    "steps": 22,
+    "pages": 10,
+    "results": {
+      "ordered component": {
+        "all": [
+          0.5,
+          0.0,
+          0.45455,
+          0.51136
+        ],
+        "real": [
+          0.5,
+          0.0,
+          0.45455,
+          0.51136
+        ]
+      },
+      "blend": {
+        "all": [
+          0.5,
+          0.0,
+          0.18182,
+          0.52273
+        ],
+        "real": [
+          0.5,
+          0.0,
+          0.18182,
+          0.52273
+        ]
+      }
+    }
+  },
+  "runtime": {
+    "sample_controls": 145,
+    "node_median_ms": {
+      "baseline": 1.49576,
+      "blend": 4.92696
+    },
+    "node_p95_ms": {
+      "baseline": 2.53946,
+      "blend": 5.37928
+    },
+    "caution": "One representative capture, Node rather than Chrome; no browser-wide latency claim."
+  },
+  "parallel_training": {
+    "logical_cpus": 20,
+    "original_feature_seconds_approx": 100,
+    "parallel_feature_seconds": 14.1,
+    "baseline_grow_seconds": 9.2,
+    "baseline_all_three_refits_seconds": 45.9,
+    "verification": "2,578,361 feature rows, word bags and step metadata match serial preprocessing; 344,668 exported evaluation scores match the 8-thread reference."
+  },
+  "weight_space_programming": {
+    "reference": "https://rikiyat.github.io/blog/weight-space-programming/",
+    "method": "Read decision paths and edit leaf values or feature activation directly, without fitting those edits. Trees have leaves and splits rather than neural-network weight matrices.",
+    "attempts": [
+      "attenuate unsupported lexical penalties",
+      "clip extreme leaves",
+      "weaken next-in-DOM positional circuits",
+      "compile focused-action and empty-form correction rules",
+      "share lexical circuits across synonyms"
+    ],
+    "result": "No direct edit consistently improved the evaluation sets. None applied to bundled weights.",
+    "measured_examples": {
+      "negative_lexical_leaf_scale_0.5": {
+        "validation_real_first": 0.8326,
+        "evaluation_real_first": 0.84374,
+        "baseline_validation_real_first": 0.82884,
+        "baseline_evaluation_real_first": 0.84833
+      },
+      "positional_leaf_scale_0": {
+        "validation_real_first": 0.83166,
+        "validation_target_in_top_four": 0.78276,
+        "baseline_validation_target_in_top_four": 0.79028
+      },
+      "semantic_aliases": {
+        "validation_real_first": 0.82602,
+        "baseline_validation_real_first": 0.82884
+      },
+      "focused_duplicate_action_penalty_4": {
+        "validation_real_first": 0.83072,
+        "evaluation_real_first": 0.84833,
+        "baseline_evaluation_real_first": 0.84833
+      }
+    }
+  },
+  "other_attempts": [
+    "binary relevance",
+    "flatter ranking gains",
+    "top-one and top-four LambdaRank truncation",
+    "larger trees and regularization",
+    "multiple random seeds and ensembles",
+    "focused text and action features",
+    "per-page sample balancing",
+    "marginal acceptable-choice likelihood",
+    "balanced pointwise classification",
+    "rank_xendcg",
+    "500-round slower boosting",
+    "bounded judgment-only refits of original leaves"
+  ],
+  "candidate": {
+    "trees": 340,
+    "model_bytes": 88537,
+    "fit_splits": [
+      "train",
+      "eval"
+    ],
+    "vocabulary_split": "train",
+    "calibration": "evaluation page identities absent from training; fitted before --all",
+    "probe_used_for_training": false
+  },
+  "reproduce": {
+    "prepare": "unzip jab-data.zip -d /tmp/jab-input",
+    "baseline": "cp jab.js /tmp/jab-baseline.js && uv run train.py /tmp/jab-input/jab-data/steps.jsonl.gz /tmp/jab-baseline.js --threads 20",
+    "judgment_eval": "cp jab.js /tmp/jab-judgment.js && uv run train.py /tmp/jab-input/jab-data/steps.jsonl.gz /tmp/jab-judgment.js --threads 20 --judgment",
+    "judgment_all": "cp jab.js /tmp/jab-judgment-all.js && uv run train.py /tmp/jab-input/jab-data/steps.jsonl.gz /tmp/jab-judgment-all.js --threads 20 --judgment --all",
+    "note": "--all reports include training examples; use the run without --all to evaluate."
+  },
+  "scratch_logs": "/tmp/jab-model",
+  "checks": [
+    "Serial/parallel feature extraction parity over the complete supplied dataset",
+    "Unicode JSONL separators, UTF-8 boundaries, CRLF and final line without newline",
+    "Judgment loss gradient agrees with finite differences; translation invariance and empty-loss groups",
+    "JavaScript and Python exported tree scores match exactly on a 145-control capture",
+    "ruff check and git diff --check",
+    "Final default trainer: 344,668 exported scores identical, no first-pick or top-four-order changes across 3,312 evaluation steps",
+    "Three unittest cases pass with training dependencies installed",
+    "Bundled jab.js is byte-for-byte unchanged"
+  ]
+}

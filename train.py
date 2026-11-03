@@ -2,13 +2,14 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "scipy", "lightgbm", "numba"]
 # ///
-"""jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all]   (needs Node)
+"""jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all] [--threads N]   (needs Node)
 
-Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
-corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string), which puts the
+Trains a 140-tree LightGBM LambdaRank ranker. Experimental --judgment adds a model that maximizes the probability of choosing
+any acceptable control. Both refit their leaves after growing their trees, then sum their scores; the blend has 340 trees.
+Writes the trees into jab.js (as JSON, in its MODEL string), which puts the
 controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"), found on the held-out
 steps. The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
-the browser computes.
+the browser computes. Page extraction, tree training and refitting use all available CPU threads by default; --threads limits them.
 steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
 home page opens, 1,469 with something already focused) and 1,126 on pages a visitor reaches from those home pages on about 660 of
 them (a search or a link, then a link on the page that opened); and 9,598 on 877 of the most visited sites in the three most common
@@ -24,6 +25,8 @@ One step per line:
 "h1", "query", "prose", "base", "vw", "vh"}, "controls": [jab.js collect()], "focus": the focused control or -1, "target": the
 control wanted next, "picks": the ordered 4 a person would want, "ok": others that are also fine, "unjudged": controls the label
 says nothing about, left out of training (optional)}.
+Vocabulary uses only the training split. Evaluation excludes steps whose page title and description also occur in training;
+--all fits the train and eval splits after calibrating on these unseen pages, leaving any probe split unused.
 Prints, for the "eval" steps, overall and per kind of page, with the trees as written into jab.js and every control ranked as jab.js
 ranks them: whether the first stop is wanted (as training counts it: a pick already visited is not), how often it is a control the
 label says nothing about, how many of the 4 stops are wanted, whether the target is first and whether it is within the 4. --all also
@@ -38,6 +41,9 @@ import pathlib
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
+from time import perf_counter
 
 import lightgbm as lgb
 import numba
@@ -48,20 +54,12 @@ ap = argparse.ArgumentParser()
 ap.add_argument("steps")
 ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
+ap.add_argument("--judgment", action="store_true", help="experimental: blend in a model of acceptable choices (340 trees)")
+ap.add_argument("--threads", type=int, default=numba.get_num_threads(), help="workers and training threads (default: all available)")
 args = ap.parse_args()
-
-# The labels, and each step's kinds of control and the controls rank() scores (all but the focused one); the controls themselves
-# only jab.js reads, below.
-steps = []
-with gzip.open(args.steps, "rt", encoding="utf-8") as lines:
-    for line in lines:
-        s = json.loads(line)
-        controls = s.pop("controls")
-        s["kinds"] = [c["kind"] for c in controls]
-        s["ids"] = [c["i"] for c in controls if c["i"] != s["focus"]]
-        steps.append(s)
-train = [s for s in steps if args.all or s["split"] == "train"]
-held = [s for s in steps if s["split"] == "eval"]
+if not 1 <= args.threads <= numba.config.NUMBA_NUM_THREADS:
+    ap.error(f"--threads must be between 1 and {numba.config.NUMBA_NUM_THREADS}")
+numba.set_num_threads(args.threads)
 
 
 def vocabulary(counts, n):
@@ -69,7 +67,9 @@ def vocabulary(counts, n):
     return {k: i for i, k in enumerate(sorted(counts, key=lambda k: (-counts[k], k))[:n])}
 
 
-KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
+def page_key(step: dict) -> tuple[str, str]:
+    return step["page"].get("title", ""), step["page"].get("desc", "")
+
 
 # The features are jab.js's own: Node loads jab.js, with stand-ins for the page it sets itself up on as it loads, and its describe()
 # gives every step's words and each control's features and words, as rank() sees them. Out come the features (x.f64), the words as
@@ -78,25 +78,37 @@ KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30
 DESCRIBE_ALL = r"""
 const fs = require("fs"),
   path = require("path"),
-  zlib = require("zlib"),
-  readline = require("readline");
+  zlib = require("zlib");
 const [jab, steps, out, kinds] = process.argv.slice(1);
 const stub = new Proxy(function () {}, { get: () => stub, set: () => true, apply: () => stub, construct: () => stub });
 Object.assign(globalThis, { document: stub, CSSStyleSheet: stub, addEventListener: stub, setInterval: stub, chrome: stub });
 const { describe } = require(path.resolve(jab));
-const kindOf = JSON.parse(kinds);
+const kindOf = JSON.parse(kinds) ?? Object.create(null);
 const ids = new Map(),
   id = (w) => ids.get(w) ?? ids.set(w, ids.size).get(w);
 const [fx, fw, fn] = ["x.f64", "w.i32", "n.i32"].map((f) => fs.openSync(`${out}/${f}`, "w")),
-  meta = [];
+  meta = [], records = [];
 let names;
+async function* lines(file) {
+  let pending = "";
+  const input = fs.createReadStream(file);
+  const decoded = file.endsWith(".gz") ? input.pipe(zlib.createGunzip()) : input;
+  for await (const chunk of decoded.setEncoding("utf8")) {
+    pending += chunk;
+    let end;
+    while ((end = pending.indexOf("\n")) >= 0) {
+      yield pending.slice(0, end);
+      pending = pending.slice(end + 1);
+    }
+  }
+  if (pending) yield pending;
+}
 (async () => {
-  const lines = readline.createInterface({
-    input: fs.createReadStream(steps).pipe(zlib.createGunzip()),
-    crlfDelay: Infinity,
-  });
-  for await (const line of lines) {
+  for await (const line of lines(steps)) {
     const s = JSON.parse(line);
+    if (kinds == "null")
+      for (const c of s.controls)
+        if (!(c.kind in kindOf)) kindOf[c.kind] = Object.keys(kindOf).length;
     const { page, controls } = describe(kindOf, s.controls, s.focus, s.page);
     names ??= controls.length ? Object.keys(controls[0].features) : undefined;
     const x = new Float64Array(controls.length * (names?.length ?? 0)),
@@ -115,22 +127,58 @@ let names;
     fs.writeSync(fw, new Uint8Array(Int32Array.from(w).buffer));
     fs.writeSync(fn, new Uint8Array(Int32Array.from(n).buffer));
     meta.push(step);
+    const { controls: all, ...record } = s;
+    records.push({ ...record, kinds: all.map((c) => c.kind), ids: all.filter((c) => c.i != s.focus).map((c) => c.i) });
   }
-  fs.writeFileSync(`${out}/meta.json`, JSON.stringify({ names, words: [...ids.keys()], steps: meta }));
+  fs.writeFileSync(`${out}/meta.json`, JSON.stringify({ names, words: [...ids.keys()], steps: meta, records, kinds: kindOf }));
 })();
 """
-with tempfile.TemporaryDirectory() as out:
-    subprocess.run(["node", "-e", DESCRIBE_ALL, args.jab, args.steps, out, json.dumps(KINDS)], check=True)
-    meta = json.loads(pathlib.Path(out, "meta.json").read_text(encoding="utf-8"))
-    FEATURES, ALL_WORDS = meta["names"], {w: k for k, w in enumerate(meta["words"])}
-    dense = np.fromfile(f"{out}/x.f64").reshape(-1, len(FEATURES))  # every row: each step's controls, one after another
-    word_ids = np.fromfile(f"{out}/w.i32", dtype=np.int32)
-    word_count = np.fromfile(f"{out}/n.i32", dtype=np.int32)
-first = 0
-for s, (n, page_words, focused_words) in zip(steps, meta["steps"], strict=True):
-    assert n == len(s["ids"]), "jab.js's describe() left out a control"
-    s["first"], s["page_words"], s["focused_words"] = first, np.array(page_words, dtype=np.int64), focused_words
-    first += n
+
+
+def describe_batch(lines: list[bytes]) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray]:
+    with tempfile.TemporaryDirectory() as directory:
+        out = pathlib.Path(directory)
+        data = out / "steps.jsonl"
+        data.write_bytes(b"".join(lines))
+        subprocess.run(["node", "-e", DESCRIBE_ALL, args.jab, str(data), directory, "null"], check=True)
+        meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+        return meta, np.fromfile(out / "x.f64"), np.fromfile(out / "w.i32", dtype=np.int32), np.fromfile(out / "n.i32", dtype=np.int32)
+
+
+started = perf_counter()
+steps, parts, ALL_WORDS = [], [], {}
+first, FEATURES = 0, None
+with gzip.open(args.steps, "rb") as lines, ThreadPoolExecutor(max_workers=args.threads) as pool:
+    batches = iter(lambda: list(islice(lines, 256)), [])
+    while pending := list(islice(batches, args.threads)):
+        for meta, values, words, counts in pool.map(describe_batch, pending):
+            if meta.get("names"):
+                FEATURES = FEATURES or meta["names"]
+                assert meta["names"] == FEATURES
+            remap = np.array([ALL_WORDS.setdefault(word, len(ALL_WORDS)) for word in meta["words"]], dtype=np.int32)
+            parts.append((values, remap[words], counts, meta["kinds"]))
+            for s, (n, page_words, focused_words) in zip(meta["records"], meta["steps"], strict=True):
+                assert n == len(s["ids"]), "jab.js's describe() left out a control"
+                s["first"], s["page_words"], s["focused_words"] = first, remap[page_words], remap[focused_words]
+                first += n
+                steps.append(s)
+
+train = [s for s in steps if s["split"] == "train"]
+training_pages = {page_key(s) for s in train}
+held = [s for s in steps if s["split"] == "eval" and page_key(s) not in training_pages]
+KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
+assert FEATURES, "the dataset contains no controls to rank"
+for values, _, _, kinds in parts:
+    remap = np.full(len(kinds), -1)
+    for kind, index in kinds.items():
+        remap[index] = KINDS.get(kind, -1)
+    column = values.reshape(-1, len(FEATURES))[:, FEATURES.index("kind")]
+    column[:] = remap[column.astype(np.int64)]
+dense = np.concatenate([part[0] for part in parts]).reshape(-1, len(FEATURES))
+word_ids = np.concatenate([part[1] for part in parts])
+word_count = np.concatenate([part[2] for part in parts])
+del parts
+print(f"Features: {len(steps)} steps, {args.threads} workers, {perf_counter() - started:.1f}s", flush=True)
 
 # The columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:"), each counted
 # over the training steps, a control's words for every control (the focused one too) and the page's once per step.
@@ -141,7 +189,10 @@ for s in train:
 mentions = np.concatenate([word_ids[trained[row_of]], *(np.array(s["focused_words"], dtype=np.int64) for s in train)])
 own = np.bincount(mentions, minlength=len(ALL_WORDS))
 pages = np.bincount(np.concatenate([s["page_words"] for s in train]), minlength=len(ALL_WORDS))
-count = lambda prefix, c: collections.Counter({w: c[k] for w, k in ALL_WORDS.items() if w.startswith(prefix) and c[k]})
+def count(prefix, counts):
+    return collections.Counter({w: counts[k] for w, k in ALL_WORDS.items() if w.startswith(prefix) and counts[k]})
+
+
 WORDS = [*vocabulary(count("w:", own), 1500), *vocabulary(count("c:", own), 400), *vocabulary(count("p:", pages), 300)]
 column = np.full(len(ALL_WORDS), -1)
 column[[ALL_WORDS[w] for w in WORDS]] = np.arange(len(WORDS))
@@ -176,6 +227,7 @@ params = {
     "learning_rate": 0.2,
     "num_leaves": 10,
     "min_data_in_leaf": 10,
+    "num_threads": args.threads,
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
     "feature_fraction": 0.8,
@@ -186,12 +238,12 @@ params = {
 }
 
 
-@numba.njit
+@numba.njit(parallel=True)
 def lambdarank(score, label, start, weight, gain):
     """LambdaRank's gradients and hessians of every row as LightGBM works them out for these params (lambdarank_objective.hpp: the
     pairs with at least one control among the 30 ranked first, normalized), each step's controls being start[q]:start[q + 1]."""
     grad, hess = np.zeros(len(score)), np.zeros(len(score))
-    for q in range(len(start) - 1):
+    for q in numba.prange(len(start) - 1):
         a, n = start[q], start[q + 1] - start[q]
         s, lab = score[a : a + n], label[a : a + n]
         order = np.argsort(-s, kind="mergesort")
@@ -224,22 +276,42 @@ def lambdarank(score, label, start, weight, gain):
     return grad, hess
 
 
-def refit(model, X, y, groups, weight):
-    """Every leaf again, the splits as they are (fully corrective, as in Regularized Greedy Forest): boosting set each tree's leaves
-    once, before the trees after it were grown. Three passes go through the trees in turn and move each tree's leaves halfway to
-    where LambdaRank wants them, every other tree in place (a damped Newton step). The same splits, ranking better; the leaves take
-    a few more digits."""
+@numba.njit(parallel=True)
+def judgment_loss(score, label, start, weight, _gain):
+    """Negative log probability of picking any acceptable control; positive curvature bounds the diagonal Hessian."""
+    grad, hess = np.zeros(len(score)), np.zeros(len(score))
+    for query in numba.prange(len(start) - 1):
+        begin, end = start[query], start[query + 1]
+        positive = label[begin:end] > 0
+        positives = np.sum(positive)
+        if not positives or positives == end - begin:
+            continue
+        values = score[begin:end]
+        probability = np.exp(values - np.max(values))
+        probability /= np.sum(probability)
+        target = np.where(positive, np.exp(np.minimum(values - np.max(values[positive]), 0.0)), 0.0)
+        target /= np.sum(target)
+        grad[begin:end] = (probability - target) * weight[begin:end]
+        curvature = probability * (1 - probability) + target * (1 - target)
+        hess[begin:end] = np.maximum(curvature, 1e-6) * weight[begin:end]
+    return grad, hess
+
+
+def refit(model, X, y, groups, weight, gradient=lambdarank, passes=3, max_step=None):
+    """Refit leaves with every other tree in place: damped Newton updates, optionally bounded for the judgment objective."""
     # every row's leaf, in every tree (in blocks of rows: LightGBM hands them back as 8-byte floats)
     leaf_of = np.vstack([model.predict(X[a : a + 100000], pred_leaf=True).astype(np.int16) for a in range(0, X.shape[0], 100000)])
     info = model.dump_model()["tree_info"]
     values = [np.array([model.get_leaf_output(k, j) for j in range(t["num_leaves"])]) for k, t in enumerate(info)]
     start = np.concatenate([[0], np.cumsum(groups)])
-    label, label_gain = y.astype(np.int64), np.array([2.0**l - 1 for l in range(4)])  # LightGBM's default label_gain
+    label, label_gain = y.astype(np.int64), np.array([2.0**grade - 1 for grade in range(4)])  # LightGBM's default label_gain
     score = sum(v[leaf_of[:, k]] for k, v in enumerate(values))
-    for _ in range(3):
+    for _ in range(passes):
         for k, v in enumerate(values):
-            g, h = lambdarank(score, label, start, weight, label_gain)
+            g, h = gradient(score, label, start, weight, label_gain)
             step = -0.5 * np.bincount(leaf_of[:, k], g, minlength=len(v)) / (np.bincount(leaf_of[:, k], h, minlength=len(v)) + 1)
+            if max_step is not None:
+                step = np.clip(step, -max_step, max_step)
             v += step
             score += step[leaf_of[:, k]]
     for k, v in enumerate(values):
@@ -248,33 +320,55 @@ def refit(model, X, y, groups, weight):
 
 
 def grow(steps_):
-    """LightGBM's trees for these steps, their leaves refit together; and the rows they were grown on"""
+    """Fit ordered-target and acceptable-choice trees in parallel, sharing the CPU budget and input rows."""
     X, ids = rows(steps_)
     y = np.concatenate([relevance(s, i) for s, i in zip(steps_, ids)])
     # The generated pages count half: they teach what few real sites show (forms, pop-ups, where the content is), and a model this
     # small has to spend most of itself on the real sites, which are what jab is for.
     weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(steps_, ids)])
     groups = [len(i) for i in ids]
-    model = lgb.train(params, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=140)
-    refit(model, X, y, groups, weight)
-    return model, X
+    boundaries = np.concatenate([[0], np.cumsum(groups)])
+    workers = min(2, args.threads) if args.judgment else 1
+    threads = args.threads // workers
+
+    def fit(judgment):
+        numba.set_num_threads(threads)
+
+        def objective(scores, _data):
+            return judgment_loss(scores, y, boundaries, weight, None)
+
+        config = {**params, "num_threads": threads}
+        if judgment:
+            config.update(objective=objective, num_leaves=31, lambda_l2=1, max_delta_step=2)
+        name = "Judgment" if judgment else "Rank"
+        started = perf_counter()
+        model = lgb.train(config, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=200 if judgment else 140)
+        print(f"{name} grow: {perf_counter() - started:.1f}s", flush=True)
+        started = perf_counter()
+        refit(model, X, y, groups, weight, judgment_loss if judgment else lambdarank, 2 if judgment else 3, 1 if judgment else None)
+        print(f"{name} refit: {perf_counter() - started:.1f}s", flush=True)
+        return model
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        models = list(pool.map(fit, [False, True] if args.judgment else [False]))
+    return models, X
 
 
-def scored(model, steps_):
+def scored(models, steps_):
     """every control of these steps, as jab.js ranks them all, with the model's score for it (in jab.js's units); and their ids"""
     X, ids = rows(steps_, every=True)
-    return model.predict(X, raw_score=True) * 100, ids
+    return sum(model.predict(X, raw_score=True, num_threads=args.threads) for model in models) * 100, ids
 
 
 # The cut ("sure", below) is found on the held-out steps, as trees that did not learn from them rank them: trees are surer of the
 # steps they learned than of a page they have not seen. Those are the trees grown on the training steps; with --all, the shipped
 # trees are grown on every step after them.
-assert held, 'the cut is found on the held-out steps ("split": "eval")'
-model, X = grow([s for s in steps if s["split"] == "train"])
-held_scores, held_ids = scored(model, held)
+assert held, 'the cut needs eval steps whose page title and description do not occur in training'
+models, X = grow(train)
+held_scores, held_ids = scored(models, held)
 if args.all:
-    del model, X  # their memory, before the shipped trees take theirs
-    model, X = grow(train)
+    del models, X  # their memory, before the shipped trees take theirs
+    models, X = grow([s for s in steps if s["split"] in ("train", "eval")])
 
 
 # The thresholds in the model as short as they can be: on a column of whole numbers, the whole number below (20, not 20.5); on any
@@ -320,11 +414,14 @@ def columns(t):
         yield from columns(t[3])
 
 
-trees = [tree(info["tree_structure"]) for info in model.dump_model()["tree_info"]]
+trees = [tree(info["tree_structure"]) for model in models for info in model.dump_model()["tree_info"]]
 # only the columns some tree asks about go in the model, numbered in order: those features, then those words
 used = sorted({j for t in trees for j in columns(t)})
 column = {j: k for k, j in enumerate(used)}
-renumber = lambda t: [column[t[0]], t[1], renumber(t[2]), renumber(t[3])] if isinstance(t, list) else t
+def renumber(t):
+    return [column[t[0]], t[1], renumber(t[2]), renumber(t[3])] if isinstance(t, list) else t
+
+
 ranker = {
     "features": [FEATURES[j] for j in used if j < len(FEATURES)],
     "kinds": KINDS,
