@@ -2,13 +2,15 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy", "scipy", "lightgbm", "numba"]
 # ///
-"""jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all] [--threads N]   (needs Node)
+"""jab, a smart tab: which controls does a person want next?   uv run train.py steps.jsonl.gz jab.js [--all] [--threads N] [--cache DIR]
 
 Trains a LightGBM LambdaRank ranker over every control of a page, refits all its leaves together once the trees are grown (fully
 corrective, as in Regularized Greedy Forest), and writes its trees into jab.js (as JSON, in its MODEL string), which puts the
 controls in the order of their scores, with the score a 3rd or 4th pick needs to be shown at all ("sure"), found on the held-out
 steps. The shipped trees: --all. The features are jab.js's own: its describe() works them out under Node, so training sees exactly what
 the browser computes. Page extraction, tree training and refitting use all available CPU threads by default; --threads limits them.
+Each stage (the features, the trees, their refit) keeps its result in --cache, under a hash of everything it reads, so a rerun skips
+the stages whose inputs are unchanged.
 steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
 home page opens, 1,469 with something already focused) and 1,126 on pages a visitor reaches from those home pages on about 660 of
 them (a search or a link, then a link on the page that opened); and 9,598 on 877 of the most visited sites in the three most common
@@ -38,9 +40,12 @@ trains on them, for the file you ship (the cut still comes from trees grown with
 import argparse
 import collections
 import gzip
+import hashlib
+import inspect
 import json
 import math
 import pathlib
+import pickle
 import re
 import subprocess
 import tempfile
@@ -58,10 +63,36 @@ ap.add_argument("steps")
 ap.add_argument("jab")
 ap.add_argument("--all", action="store_true")
 ap.add_argument("--threads", type=int, default=numba.get_num_threads(), help="workers and training threads (default: all available)")
+ap.add_argument("--cache", default=str(pathlib.Path.home() / ".cache" / "jab-train"), help="where the stages keep their results ('' for nowhere)")
 args = ap.parse_args()
 if not 1 <= args.threads <= numba.config.NUMBA_NUM_THREADS:
     ap.error(f"--threads must be between 1 and {numba.config.NUMBA_NUM_THREADS}")
 numba.set_num_threads(args.threads)
+
+
+def digest(*parts):
+    """a short hash of these inputs: bytes, arrays (their contents), or anything as its text"""
+    h = hashlib.blake2b(digest_size=16)
+    for part in parts:
+        h.update(part if isinstance(part, bytes) else np.ascontiguousarray(part).tobytes() if isinstance(part, np.ndarray) else str(part).encode())
+    return h.hexdigest()
+
+
+def cached(stage, key, make):
+    """make()'s result, or the one kept from a run with the same key; kept by writing it whole and then renaming it"""
+    if not args.cache:
+        return make()
+    path = pathlib.Path(args.cache) / f"{stage}-{key}.pickle"
+    if path.exists():
+        print(f"{stage.capitalize()}: from the cache", flush=True)
+        return pickle.loads(path.read_bytes())
+    value = make()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(".partial")
+    with open(partial, "wb") as f:
+        pickle.dump(value, f, protocol=5)
+    partial.rename(path)
+    return value
 
 
 def vocabulary(counts, n):
@@ -147,40 +178,50 @@ def describe_batch(lines: list[bytes]) -> tuple[dict, np.ndarray, np.ndarray, np
         return meta, np.fromfile(out / "x.f64"), np.fromfile(out / "w.i32", dtype=np.int32), np.fromfile(out / "n.i32", dtype=np.int32)
 
 
-started = perf_counter()
-steps, parts, ALL_WORDS = [], [], {}
-first, FEATURES = 0, None
-with gzip.open(args.steps, "rb") as lines, ThreadPoolExecutor(max_workers=args.threads) as pool:
-    batches = iter(lambda: list(islice(lines, 256)), [])
-    while pending := list(islice(batches, args.threads)):
-        for meta, values, words, counts in pool.map(describe_batch, pending):
-            if meta.get("names"):
-                FEATURES = FEATURES or meta["names"]
-                assert meta["names"] == FEATURES
-            remap = np.array([ALL_WORDS.setdefault(word, len(ALL_WORDS)) for word in meta["words"]], dtype=np.int32)
-            parts.append((values, remap[words], counts, meta["kinds"]))
-            for s, (n, page_words, focused_words) in zip(meta["records"], meta["steps"], strict=True):
-                assert n == len(s["ids"]), "jab.js's describe() left out a control"
-                s["first"], s["page_words"], s["focused_words"] = first, remap[page_words], remap[focused_words]
-                first += n
-                steps.append(s)
+def features():
+    """every step's controls through jab.js's describe(): the features as rows, their words, the vocabulary of words and kinds"""
+    started = perf_counter()
+    steps, parts, ALL_WORDS = [], [], {}
+    first, FEATURES = 0, None
+    with gzip.open(args.steps, "rb") as lines, ThreadPoolExecutor(max_workers=args.threads) as pool:
+        batches = iter(lambda: list(islice(lines, 256)), [])
+        while pending := list(islice(batches, args.threads)):
+            for meta, values, words, counts in pool.map(describe_batch, pending):
+                if meta.get("names"):
+                    FEATURES = FEATURES or meta["names"]
+                    assert meta["names"] == FEATURES
+                remap = np.array([ALL_WORDS.setdefault(word, len(ALL_WORDS)) for word in meta["words"]], dtype=np.int32)
+                parts.append((values, remap[words], counts, meta["kinds"]))
+                for s, (n, page_words, focused_words) in zip(meta["records"], meta["steps"], strict=True):
+                    assert n == len(s["ids"]), "jab.js's describe() left out a control"
+                    s["first"], s["page_words"], s["focused_words"] = first, remap[page_words], remap[focused_words]
+                    first += n
+                    steps.append(s)
 
+    train = [s for s in steps if s["split"] == "train"]
+    KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
+    assert FEATURES, "the dataset contains no controls to rank"
+    for values, _, _, kinds in parts:
+        remap = np.full(len(kinds), -1)
+        for kind, index in kinds.items():
+            remap[index] = KINDS.get(kind, -1)
+        column = values.reshape(-1, len(FEATURES))[:, FEATURES.index("kind")]
+        column[:] = remap[column.astype(np.int64)]
+    dense = np.concatenate([part[0] for part in parts]).reshape(-1, len(FEATURES))
+    word_ids = np.concatenate([part[1] for part in parts])
+    word_count = np.concatenate([part[2] for part in parts])
+    del parts
+    print(f"Features: {len(steps)} steps, {args.threads} workers, {perf_counter() - started:.1f}s", flush=True)
+    return steps, dense, word_ids, word_count, ALL_WORDS, FEATURES, KINDS
+
+
+# The features change only with the steps, with jab.js (all but its MODEL string, which training rewrites) and with this code.
+jab_code = re.sub(r"(const MODEL =\s*')[^']*'", r"\1'", pathlib.Path(args.jab).read_text(encoding="utf-8"))
+feature_key = digest(pathlib.Path(args.steps).read_bytes(), jab_code, DESCRIBE_ALL, inspect.getsource(describe_batch), inspect.getsource(features))
+steps, dense, word_ids, word_count, ALL_WORDS, FEATURES, KINDS = cached("features", feature_key, features)
 train = [s for s in steps if s["split"] == "train"]
 training_pages = {page_key(s) for s in train}
 held = [s for s in steps if s["split"] == "eval" and page_key(s) not in training_pages]
-KINDS = vocabulary(collections.Counter(k for s in train for k in s["kinds"]), 30)
-assert FEATURES, "the dataset contains no controls to rank"
-for values, _, _, kinds in parts:
-    remap = np.full(len(kinds), -1)
-    for kind, index in kinds.items():
-        remap[index] = KINDS.get(kind, -1)
-    column = values.reshape(-1, len(FEATURES))[:, FEATURES.index("kind")]
-    column[:] = remap[column.astype(np.int64)]
-dense = np.concatenate([part[0] for part in parts]).reshape(-1, len(FEATURES))
-word_ids = np.concatenate([part[1] for part in parts])
-word_count = np.concatenate([part[2] for part in parts])
-del parts
-print(f"Features: {len(steps)} steps, {args.threads} workers, {perf_counter() - started:.1f}s", flush=True)
 
 # The columns after the features: a word of the control ("w:"), of the text around it ("c:"), of the page ("p:"), each counted
 # over the training steps, a control's words for every control (the focused one too) and the page's once per step.
@@ -238,6 +279,7 @@ params = {
     "force_row_wise": True,
     "verbose": -1,
 }
+ROUNDS = 140
 
 
 @numba.njit(parallel=True)
@@ -306,13 +348,25 @@ def grow(steps_):
     # small has to spend most of itself on the real sites, which are what jab is for.
     weight = np.concatenate([np.full(len(i), 1 if s["type"] in ("real", "live") else 0.5) for s, i in zip(steps_, ids)])
     groups = [len(i) for i in ids]
-    started = perf_counter()
-    model = lgb.train(params, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=140)
-    print(f"Grow: {perf_counter() - started:.1f}s", flush=True)
-    started = perf_counter()
-    refit(model, X, y, groups, weight)
-    print(f"Refit: {perf_counter() - started:.1f}s", flush=True)
-    return model, X
+    settings = json.dumps({k: v for k, v in params.items() if k != "num_threads"}, sort_keys=True)
+    grow_key = digest(X.data, X.indices, X.indptr, y, weight, np.array(groups), settings, ROUNDS, lgb.__version__)
+
+    def boost():
+        started = perf_counter()
+        model = lgb.train(params, lgb.Dataset(X, y, group=groups, weight=weight), num_boost_round=ROUNDS)
+        print(f"Grow: {perf_counter() - started:.1f}s", flush=True)
+        return model.model_to_string()
+
+    model = lgb.Booster(model_str=cached("grow", grow_key, boost))
+
+    def corrected():
+        started = perf_counter()
+        refit(model, X, y, groups, weight)
+        print(f"Refit: {perf_counter() - started:.1f}s", flush=True)
+        return model.model_to_string()
+
+    refit_key = digest(grow_key, inspect.getsource(refit), inspect.getsource(lambdarank.py_func))
+    return lgb.Booster(model_str=cached("refit", refit_key, corrected)), X
 
 
 def scored(model, steps_):
