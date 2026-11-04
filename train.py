@@ -11,12 +11,13 @@ steps. The shipped trees: --all. The features are jab.js's own: its describe() w
 the browser computes. Page extraction, tree training and refitting use all available CPU threads by default; --threads limits them.
 Each stage (the features, the trees, their refit) keeps its result in --cache, under a hash of everything it reads, so a rerun skips
 the stages whose inputs are unchanged.
-steps.jsonl.gz (not included): 6,004 steps on about 1,180 real sites; 2,279 on about 1,030 of the most visited sites (810 as the
-home page opens, 1,469 with something already focused) and 1,126 on pages a visitor reaches from those home pages on about 660 of
-them (a search or a link, then a link on the page that opened); and 9,598 on 877 of the most visited sites in the three most common
-desktop windows, each page seen at 1920x945, 1536x730 and 1366x640 with one label carried across by element (1,332 home pages;
-1,689 pages a link opens, such as a model, a repository, a product or an article; 191 search results); each page allowed by its
-robots.txt to anyone, ClaudeBot, anthropic-ai and Claude-User, no adult sites; labelled by Claude from screenshots. And 8,674 steps
+steps.jsonl.gz (not included): 5,696 steps on about 1,150 real sites; 2,936 on about 870 of the most visited sites (as the home
+page opens, with something already focused, or on a page a search or a link led to); and 22,317 on about 1,990 of the most visited
+sites in the three most common desktop windows, each page seen at 1920x945, 1536x730 and 1366x640 with one label carried across by
+element (home pages with nothing, a link or the search box focused; pages a link or a search opens, such as a model, a repository,
+a product or an article). Each page allowed by its robots.txt to anyone, ClaudeBot, anthropic-ai and Claude-User (a robots.txt
+that cannot be read allows nothing); no adult, piracy or other illegal sites (domain blocklists, then a review of every site and
+page); labelled by Claude from screenshots. And 8,674 steps
 on 5,000 generated pages (news, results, articles, feeds, listings, docs; landing pages, forms, search pages, apps, products,
 cookie pop-ups; six languages), labelled by rule and counted at half weight; all collected by jab.js's own collector. Where links
 lead to the same place, the label wants one of them: text over a picture of the same thing (on a page that is mostly pictures, the
